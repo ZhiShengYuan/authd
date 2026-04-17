@@ -14,6 +14,7 @@ import (
 	"syscall"
 	"time"
 
+	_ "github.com/mirror-guard/auth-backend/internal/apidoc"
 	"github.com/mirror-guard/auth-backend/internal/config"
 	"github.com/mirror-guard/auth-backend/internal/cookie"
 	"github.com/mirror-guard/auth-backend/internal/handler"
@@ -40,6 +41,11 @@ var (
 	shutdownFn = func(srv *http.Server, ctx context.Context) error { return srv.Shutdown(ctx) }
 )
 
+// @title Mirror Guard Auth Gateway API
+// @version 1.0
+// @description Authentication gateway endpoints for inline authorization, challenge issuance, and PoW verification.
+// @license.name Apache-2.0
+// @license.url https://www.apache.org/licenses/LICENSE-2.0.html
 func main() {
 	configPath := flag.String("config", "./configs/config.example.json", "path to config file")
 	flag.Parse()

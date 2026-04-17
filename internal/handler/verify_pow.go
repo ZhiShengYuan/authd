@@ -71,6 +71,20 @@ func (h *VerifyPoWHandler) SetCookieManager(cookieMgr *cookie.Manager) {
 	h.mu.Unlock()
 }
 
+// @Summary Verify proof-of-work submission
+// @Description Validates submitted PoW, prevents nonce replay, then redirects with an auth cookie. Requires X-Real-IP header; X-UA is optional. Accepts JSON body (modeled in OpenAPI spec). The runtime also accepts application/x-www-form-urlencoded form submissions with the same field names, but this is not modeled in the spec for Swagger 2.0 compatibility.
+// @Tags auth
+// @Accept json
+// @Produce json
+// @Param X-Real-IP header string true "Client IP address"
+// @Param X-UA header string false "Client user agent"
+// @Param body body apidoc.VerifyPoWRequest true "PoW submission"
+// @Success 302 {string} string "Redirect to target with cookie (Set-Cookie and Location headers)"
+// @Failure 400 {object} apidoc.VerifyPoWError "JSON-shaped error body via http.Error"
+// @Failure 403 {object} apidoc.VerifyPoWError "JSON-shaped error body via http.Error"
+// @Failure 405 {string} string "Method not allowed"
+// @Failure 503 {string} string "Service unavailable — may be JSON-shaped error or plain text"
+// @Router /api/verify_pow [post]
 func (h *VerifyPoWHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.mu.RLock()
 	cfg := h.config

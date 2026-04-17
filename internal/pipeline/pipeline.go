@@ -129,6 +129,23 @@ func (p *Pipeline) SetCookieManager(cookieMgr *cookie.Manager) {
 	p.mu.Unlock()
 }
 
+// @Summary Inline authorization decision
+// @Description Header-driven decision endpoint for Nginx auth_request integrations. Returns status/header outcomes only (no JSON response body on any status). Required headers: X-Real-IP and X-URL. Optional headers: X-UA and X-Request-ID. Optional Cookie header carries the auth cookie and any issued cookie uses Secure=true, HttpOnly=true, SameSite=Lax.
+// @Tags auth
+// @Accept json
+// @Produce json
+// @Param X-Real-IP header string true "Client IP address"
+// @Param X-URL header string true "Original requested URL"
+// @Param X-UA header string false "Client user agent"
+// @Param X-Request-ID header string false "Request correlation identifier"
+// @Param Cookie header string false "Auth cookie for token validation"
+// @Success 200 {object} nil "Allowed"
+// @Failure 401 {object} nil "Challenge required — responds with X-Auth-Action: challenge header only, no body"
+// @Failure 403 {object} nil "Forbidden"
+// @Success 302 {string} string "Redirect (Location header)"
+// @Failure 444 {object} nil "Connection dropped (Nginx-specific)"
+// @Failure 503 {object} nil "Service unavailable"
+// @Router /api/auth_inline [get]
 func (p *Pipeline) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	start := time.Now()
 	ctx, span := otel.Tracer("mirror-guard-auth-gateway/pipeline").Start(r.Context(), "pipeline.ServeHTTP")

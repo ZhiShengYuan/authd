@@ -23,7 +23,7 @@ const docTemplate = `{
     "paths": {
         "/api/auth_inline": {
             "get": {
-                "description": "Public API contract documents GET semantics for Nginx auth_request integrations. Required headers: X-Real-IP and X-URL. Optional headers: X-UA and X-Request-ID. Optional Cookie header carries the auth cookie and any issued cookie uses Secure=true, HttpOnly=true, SameSite=Lax.",
+                "description": "Header-driven decision endpoint for Nginx auth_request integrations. Returns status/header outcomes only (no JSON response body on any status). Required headers: X-Real-IP and X-URL. Optional headers: X-UA and X-Request-ID. Optional Cookie header carries the auth cookie and any issued cookie uses Secure=true, HttpOnly=true, SameSite=Lax.",
                 "consumes": [
                     "application/json"
                 ],
@@ -79,10 +79,7 @@ const docTemplate = `{
                         }
                     },
                     "401": {
-                        "description": "Challenge required (X-Auth-Action: challenge)",
-                        "schema": {
-                            "$ref": "#/definitions/apidoc.AuthInlineError"
-                        }
+                        "description": "Challenge required — responds with X-Auth-Action: challenge header only, no body"
                     },
                     "403": {
                         "description": "Forbidden"
@@ -98,7 +95,7 @@ const docTemplate = `{
         },
         "/api/challenge": {
             "get": {
-                "description": "Returns PoW challenge parameters for a protected target. Requires X-Real-IP and X-URL headers; X-UA is optional.",
+                "description": "Returns PoW challenge parameters for a protected target. Requires X-Real-IP header; X-URL header is preferred, and if absent, the pow_target cookie is used as fallback. X-UA is optional.",
                 "consumes": [
                     "application/json"
                 ],
@@ -119,10 +116,9 @@ const docTemplate = `{
                     },
                     {
                         "type": "string",
-                        "description": "Original requested URL",
+                        "description": "Original requested URL (falls back to pow_target cookie if absent)",
                         "name": "X-URL",
-                        "in": "header",
-                        "required": true
+                        "in": "header"
                     },
                     {
                         "type": "string",
@@ -139,26 +135,31 @@ const docTemplate = `{
                         }
                     },
                     "400": {
-                        "description": "Bad Request",
+                        "description": "Plain text error: 'invalid client ip' or 'missing X-URL header'",
                         "schema": {
-                            "$ref": "#/definitions/apidoc.ChallengeError"
+                            "type": "string"
                         }
                     },
                     "405": {
-                        "description": "Method not allowed"
+                        "description": "Method not allowed",
+                        "schema": {
+                            "type": "string"
+                        }
                     },
                     "500": {
-                        "description": "Internal server error"
+                        "description": "Internal server error",
+                        "schema": {
+                            "type": "string"
+                        }
                     }
                 }
             }
         },
         "/api/verify_pow": {
             "post": {
-                "description": "Validates submitted PoW, prevents nonce replay, then redirects with an auth cookie. Requires X-Real-IP header; X-UA is optional.",
+                "description": "Validates submitted PoW, prevents nonce replay, then redirects with an auth cookie. Requires X-Real-IP header; X-UA is optional. Accepts JSON body (modeled in OpenAPI spec). The runtime also accepts application/x-www-form-urlencoded form submissions with the same field names, but this is not modeled in the spec for Swagger 2.0 compatibility.",
                 "consumes": [
-                    "application/json",
-                    "application/x-www-form-urlencoded"
+                    "application/json"
                 ],
                 "produces": [
                     "application/json"
@@ -199,24 +200,27 @@ const docTemplate = `{
                         }
                     },
                     "400": {
-                        "description": "Bad Request",
+                        "description": "JSON-shaped error body via http.Error",
                         "schema": {
                             "$ref": "#/definitions/apidoc.VerifyPoWError"
                         }
                     },
                     "403": {
-                        "description": "Forbidden",
+                        "description": "JSON-shaped error body via http.Error",
                         "schema": {
                             "$ref": "#/definitions/apidoc.VerifyPoWError"
                         }
                     },
                     "405": {
-                        "description": "Method not allowed"
+                        "description": "Method not allowed",
+                        "schema": {
+                            "type": "string"
+                        }
                     },
                     "503": {
-                        "description": "Service Unavailable",
+                        "description": "Service unavailable — may be JSON-shaped error or plain text",
                         "schema": {
-                            "$ref": "#/definitions/apidoc.VerifyPoWError"
+                            "type": "string"
                         }
                     }
                 }
@@ -224,36 +228,6 @@ const docTemplate = `{
         }
     },
     "definitions": {
-        "apidoc.AuthInlineError": {
-            "type": "object",
-            "properties": {
-                "error": {
-                    "description": "Error is a machine-readable error code for auth inline failures.",
-                    "type": "string",
-                    "example": "challenge_required"
-                },
-                "message": {
-                    "description": "Message is a human-readable summary of the auth inline failure.",
-                    "type": "string",
-                    "example": "Client must complete a proof-of-work challenge"
-                }
-            }
-        },
-        "apidoc.ChallengeError": {
-            "type": "object",
-            "properties": {
-                "error": {
-                    "description": "Error is a machine-readable error code for challenge endpoint failures.",
-                    "type": "string",
-                    "example": "invalid_client_ip"
-                },
-                "message": {
-                    "description": "Message is a human-readable summary of why challenge generation failed.",
-                    "type": "string",
-                    "example": "Unable to determine client subnet"
-                }
-            }
-        },
         "apidoc.ChallengeResponse": {
             "type": "object",
             "properties": {
@@ -280,12 +254,7 @@ const docTemplate = `{
                 "error": {
                     "description": "Error is a machine-readable error code for programmatic handling.",
                     "type": "string",
-                    "example": "invalid_pow"
-                },
-                "message": {
-                    "description": "Message is a human-readable description of the verification failure.",
-                    "type": "string",
-                    "example": "The submitted nonce does not satisfy the difficulty requirement"
+                    "example": "invalid proof of work"
                 }
             }
         },

@@ -51,6 +51,19 @@ func (h *ChallengeHandler) SetConfig(cfg *config.Config) {
 	h.mu.Unlock()
 }
 
+// @Summary Issue proof-of-work challenge
+// @Description Returns PoW challenge parameters for a protected target. Requires X-Real-IP header; X-URL header is preferred, and if absent, the pow_target cookie is used as fallback. X-UA is optional.
+// @Tags auth
+// @Accept json
+// @Produce json
+// @Param X-Real-IP header string true "Client IP address"
+// @Param X-URL header string false "Original requested URL (falls back to pow_target cookie if absent)"
+// @Param X-UA header string false "Client user agent"
+// @Success 200 {object} apidoc.ChallengeResponse
+// @Failure 400 {string} string "Plain text error: 'invalid client ip' or 'missing X-URL header'"
+// @Failure 405 {string} string "Method not allowed"
+// @Failure 500 {string} string "Internal server error"
+// @Router /api/challenge [get]
 func (h *ChallengeHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.mu.RLock()
 	cfg := h.config
