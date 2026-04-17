@@ -1,0 +1,60 @@
+{
+  "version": 1,
+  "whitelist_cidrs": [
+    "10.0.0.0/8",
+    "192.168.0.0/16"
+  ],
+  "blacklist_cidrs": [
+    "203.0.113.0/24"
+  ],
+  "blacklist_uas": [
+    "bad-bot"
+  ],
+  "quota_defaults": {
+    "default_limit": 200,
+    "default_window": "24h"
+  },
+  "rules": [
+    {
+      "name": "metadata-browser-challenge",
+      "path_prefix": "/ubuntu/",
+      "client_class": "browser",
+      "download_behavior": "metadata",
+      "action": "challenge",
+      "difficulty": 6,
+      "quota_limit": 120,
+      "quota_window": "24h"
+    },
+    {
+      "name": "large-cli-direct-sign",
+      "path_prefix": "/ubuntu/",
+      "client_class": "cli",
+      "download_behavior": "large_file",
+      "action": "direct_sign",
+      "difficulty": 0,
+      "quota_limit": 80,
+      "quota_window": "24h"
+    },
+    {
+      "name": "pkg-manager-allow",
+      "path_prefix": "/pypi/",
+      "client_class": "package_manager",
+      "download_behavior": "small_file",
+      "action": "allow",
+      "difficulty": 0,
+      "quota_limit": 400,
+      "quota_window": "12h"
+    },
+    {
+      "name": "reject-generic-large-browser",
+      "path_prefix": "/downloads/",
+      "client_class": "browser",
+      "download_behavior": "large_file",
+      "action": "reject",
+      "difficulty": 0,
+      "quota_limit": 20,
+      "quota_window": "24h",
+      "redirect_url": "https://mirrors.example.org"
+    }
+  ]
+}

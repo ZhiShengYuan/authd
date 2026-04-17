@@ -1,0 +1,18 @@
+# Sisyphus planner state
+.sisyphus/
+
+# Coverage outputs
+coverage.out
+coverage-*.out
+cmdcov.out
+cov-*.out
+coverage_*.out
+coverage-pipeline.html
+
+# Temp files
+*.tmp
+*.log
+
+# OS
+.DS_Store
+Thumbs.db

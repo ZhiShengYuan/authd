@@ -1,0 +1,18 @@
+{
+  "server": {
+    "listen_network": "tcp",
+    "listen_address": "127.0.0.1:8080"
+  },
+  "security": {
+    "global_secret": "0123456789abcdef0123456789abcdef",
+    "cookie_name": "auth_token",
+    "cookie_ttl_seconds": 15,
+    "nonce_ttl_seconds": 30,
+    "pow_min_difficulty": 4,
+    "pow_max_difficulty": 10,
+    "pow_window_seconds": 60
+  },
+  "policy": {
+    "external_lists_path": "./configs/policy.external.json"
+  }
+}

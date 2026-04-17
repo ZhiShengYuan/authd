@@ -1,0 +1,129 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Proof of Work Challenge</title>
+  <style>
+    body { font-family: sans-serif; max-width: 720px; margin: 2rem auto; padding: 0 1rem; }
+    pre { background: #f6f8fa; padding: 0.75rem; overflow: auto; }
+  </style>
+</head>
+<body>
+  <h1>Verifying your download request</h1>
+  <p id="status">Initializing challenge…</p>
+  <pre id="detail"></pre>
+
+  <script>
+    const statusEl = document.getElementById("status");
+    const detailEl = document.getElementById("detail");
+
+    function setStatus(msg, detail) {
+      statusEl.textContent = msg;
+      detailEl.textContent = detail || "";
+    }
+
+    function cookieValue(name) {
+      const parts = document.cookie ? document.cookie.split(";") : [];
+      for (const p of parts) {
+        const [k, ...rest] = p.trim().split("=");
+        if (k === name) {
+          return decodeURIComponent(rest.join("="));
+        }
+      }
+      return "";
+    }
+
+    function leadingZeroHex(hashBytes) {
+      let count = 0;
+      for (const b of new Uint8Array(hashBytes)) {
+        if ((b >> 4) === 0) {
+          count += 1;
+        } else {
+          break;
+        }
+        if ((b & 0x0f) === 0) {
+          count += 1;
+        } else {
+          break;
+        }
+      }
+      return count;
+    }
+
+    async function solve(prefix, difficulty) {
+      let nonce = 0;
+      for (;;) {
+        const guess = String(nonce);
+        const payload = new TextEncoder().encode(prefix + guess);
+        const digest = await crypto.subtle.digest("SHA-256", payload);
+        if (leadingZeroHex(digest) >= difficulty) {
+          return guess;
+        }
+        nonce += 1;
+        if (nonce % 5000 === 0) {
+          setStatus("Solving challenge…", `Tried ${nonce.toLocaleString()} nonces`);
+          await new Promise((resolve) => setTimeout(resolve, 0));
+        }
+      }
+    }
+
+    async function run() {
+      try {
+        const targetFromCookie = cookieValue("pow_target");
+        const challengeResp = await fetch("/api/challenge", {
+          method: "GET",
+          headers: targetFromCookie ? { "X-URL": targetFromCookie } : {}
+        });
+
+        if (!challengeResp.ok) {
+          throw new Error(`challenge failed: HTTP ${challengeResp.status}`);
+        }
+
+        const challenge = await challengeResp.json();
+        const prefix = challenge.prefix;
+        const difficulty = Number(challenge.difficulty);
+        const target = challenge.target || targetFromCookie || "/";
+
+        if (!prefix || !Number.isFinite(difficulty)) {
+          throw new Error("challenge response missing prefix/difficulty");
+        }
+
+        setStatus("Solving challenge…", `Difficulty ${difficulty}, target ${target}`);
+        const nonce = await solve(prefix, difficulty);
+
+        setStatus("Submitting proof…", `Nonce: ${nonce}`);
+        const verifyResp = await fetch("/api/verify_pow", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json"
+          },
+          body: JSON.stringify({
+            prefix,
+            nonce,
+            target_uri: target
+          })
+        });
+
+        const location = verifyResp.headers.get("Location") || target;
+        if (verifyResp.status >= 300 && verifyResp.status < 400) {
+          window.location.assign(location);
+          return;
+        }
+
+        if (verifyResp.ok) {
+          window.location.assign(location);
+          return;
+        }
+
+        const body = await verifyResp.text();
+        throw new Error(`verify failed: HTTP ${verifyResp.status} ${body}`);
+      } catch (err) {
+        setStatus("Challenge failed", String(err));
+      }
+    }
+
+    run();
+  </script>
+</body>
+</html>
