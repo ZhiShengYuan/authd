@@ -3,6 +3,7 @@ package pipeline
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -160,10 +161,11 @@ func (p *Pipeline) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	defer func() {
-		if recover() != nil {
+		if r := recover(); r != nil {
 			action = "fallback"
 			decisionReason = "panic_recovered"
 			fallbackMode = true
+			slog.Error("pipeline panicked", "panic", r)
 			w.WriteHeader(http.StatusServiceUnavailable)
 		}
 	}()
@@ -393,6 +395,8 @@ func (p *Pipeline) executeAction(w http.ResponseWriter, r *http.Request, eval ev
 					Value:    token,
 					Path:     "/",
 					HttpOnly: true,
+					Secure:   true,
+					SameSite: http.SameSiteLaxMode,
 					MaxAge:   cookieMgr.TTLSeconds(),
 				})
 			}

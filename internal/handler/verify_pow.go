@@ -2,6 +2,7 @@ package handler
 
 import (
 	"encoding/json"
+	"log/slog"
 	"net/http"
 	"sync"
 	"time"
@@ -88,8 +89,9 @@ func (h *VerifyPoWHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	defer func() {
-		if recover() != nil {
+		if r := recover(); r != nil {
 			action = "fallback"
+			slog.Error("verify_pow handler panicked", "panic", r)
 			w.WriteHeader(http.StatusServiceUnavailable)
 		}
 	}()
@@ -170,6 +172,8 @@ func (h *VerifyPoWHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		Value:    token,
 		Path:     "/",
 		HttpOnly: true,
+		Secure:   true,
+		SameSite: http.SameSiteLaxMode,
 		MaxAge:   cookieMgr.TTLSeconds(),
 	})
 	w.Header().Set("Location", targetURI)
