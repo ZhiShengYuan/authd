@@ -1,0 +1,222 @@
+definitions:
+  apidoc.AuthInlineError:
+    properties:
+      error:
+        description: Error is a machine-readable error code for auth inline failures.
+        example: challenge_required
+        type: string
+      message:
+        description: Message is a human-readable summary of the auth inline failure.
+        example: Client must complete a proof-of-work challenge
+        type: string
+    type: object
+  apidoc.ChallengeError:
+    properties:
+      error:
+        description: Error is a machine-readable error code for challenge endpoint
+          failures.
+        example: invalid_client_ip
+        type: string
+      message:
+        description: Message is a human-readable summary of why challenge generation
+          failed.
+        example: Unable to determine client subnet
+        type: string
+    type: object
+  apidoc.ChallengeResponse:
+    properties:
+      difficulty:
+        description: Difficulty is the required number of leading zero bits/characters
+          for PoW validation.
+        example: 5
+        type: integer
+      prefix:
+        description: Prefix is the signed challenge prefix tied to client subnet and
+          target.
+        example: 1700000000:abcdef12:signaturehex
+        type: string
+      target:
+        description: Target is the protected resource URL that this challenge authorizes
+          when solved.
+        example: https://mirror.example.com/file.iso
+        type: string
+    type: object
+  apidoc.VerifyPoWError:
+    properties:
+      error:
+        description: Error is a machine-readable error code for programmatic handling.
+        example: invalid_pow
+        type: string
+      message:
+        description: Message is a human-readable description of the verification failure.
+        example: The submitted nonce does not satisfy the difficulty requirement
+        type: string
+    type: object
+  apidoc.VerifyPoWRequest:
+    properties:
+      nonce:
+        description: Nonce is the client-computed value that satisfies the requested
+          PoW difficulty.
+        example: "42"
+        type: string
+      prefix:
+        description: Prefix is the signed challenge prefix returned by the challenge
+          endpoint.
+        example: 1700000000:abcdef12:signaturehex
+        type: string
+      target_uri:
+        description: TargetURI is the original protected URL to redirect to after
+          successful verification.
+        example: https://mirror.example.com/file.iso
+        type: string
+    type: object
+info:
+  contact: {}
+  description: Authentication gateway endpoints for inline authorization, challenge
+    issuance, and PoW verification.
+  license:
+    name: Apache-2.0
+    url: https://www.apache.org/licenses/LICENSE-2.0.html
+  title: Mirror Guard Auth Gateway API
+  version: "1.0"
+paths:
+  /api/auth_inline:
+    get:
+      consumes:
+      - application/json
+      description: 'Public API contract documents GET semantics for Nginx auth_request
+        integrations. Required headers: X-Real-IP and X-URL. Optional headers: X-UA
+        and X-Request-ID. Optional Cookie header carries the auth cookie and any issued
+        cookie uses Secure=true, HttpOnly=true, SameSite=Lax.'
+      parameters:
+      - description: Client IP address
+        in: header
+        name: X-Real-IP
+        required: true
+        type: string
+      - description: Original requested URL
+        in: header
+        name: X-URL
+        required: true
+        type: string
+      - description: Client user agent
+        in: header
+        name: X-UA
+        type: string
+      - description: Request correlation identifier
+        in: header
+        name: X-Request-ID
+        type: string
+      - description: Auth cookie for token validation
+        in: header
+        name: Cookie
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: Allowed
+        "302":
+          description: Redirect (Location header)
+          schema:
+            type: string
+        "401":
+          description: 'Challenge required (X-Auth-Action: challenge)'
+          schema:
+            $ref: '#/definitions/apidoc.AuthInlineError'
+        "403":
+          description: Forbidden
+        "444":
+          description: Connection dropped (Nginx-specific)
+        "503":
+          description: Service unavailable
+      summary: Inline authorization decision
+      tags:
+      - auth
+  /api/challenge:
+    get:
+      consumes:
+      - application/json
+      description: Returns PoW challenge parameters for a protected target. Requires
+        X-Real-IP and X-URL headers; X-UA is optional.
+      parameters:
+      - description: Client IP address
+        in: header
+        name: X-Real-IP
+        required: true
+        type: string
+      - description: Original requested URL
+        in: header
+        name: X-URL
+        required: true
+        type: string
+      - description: Client user agent
+        in: header
+        name: X-UA
+        type: string
+      produces:
+      - application/json
+      responses:
+        "200":
+          description: OK
+          schema:
+            $ref: '#/definitions/apidoc.ChallengeResponse'
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/apidoc.ChallengeError'
+        "405":
+          description: Method not allowed
+        "500":
+          description: Internal server error
+      summary: Issue proof-of-work challenge
+      tags:
+      - auth
+  /api/verify_pow:
+    post:
+      consumes:
+      - application/json
+      - application/x-www-form-urlencoded
+      description: Validates submitted PoW, prevents nonce replay, then redirects
+        with an auth cookie. Requires X-Real-IP header; X-UA is optional.
+      parameters:
+      - description: Client IP address
+        in: header
+        name: X-Real-IP
+        required: true
+        type: string
+      - description: Client user agent
+        in: header
+        name: X-UA
+        type: string
+      - description: PoW submission
+        in: body
+        name: body
+        required: true
+        schema:
+          $ref: '#/definitions/apidoc.VerifyPoWRequest'
+      produces:
+      - application/json
+      responses:
+        "302":
+          description: Redirect to target with cookie (Set-Cookie and Location headers)
+          schema:
+            type: string
+        "400":
+          description: Bad Request
+          schema:
+            $ref: '#/definitions/apidoc.VerifyPoWError'
+        "403":
+          description: Forbidden
+          schema:
+            $ref: '#/definitions/apidoc.VerifyPoWError'
+        "405":
+          description: Method not allowed
+        "503":
+          description: Service Unavailable
+          schema:
+            $ref: '#/definitions/apidoc.VerifyPoWError'
+      summary: Verify proof-of-work submission
+      tags:
+      - auth
+swagger: "2.0"
