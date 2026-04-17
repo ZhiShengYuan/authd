@@ -12,12 +12,13 @@ func TestLoadConfig(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name           string
-		jsonConfig     string
-		pathMode       string
-		wantErr        string
-		checkDefaults  bool
-		checkAllFields bool
+		name               string
+		jsonConfig         string
+		pathMode           string
+		wantErr            string
+		checkDefaults      bool
+		checkCookieDefault bool
+		checkAllFields     bool
 	}{
 		{
 			name: "happy path with all fields set",
@@ -33,10 +34,8 @@ func TestLoadConfig(t *testing.T) {
 					"nonce_ttl_seconds": 90,
 					"pow_min_difficulty": 5,
 					"pow_max_difficulty": 12,
-					"pow_window_seconds": 45
-				},
-				"policy": {
-					"external_lists_path": "/etc/mirror/policy.json"
+					"challenge_ttl_seconds": 45,
+					"ticket_ttl_seconds": 600
 				}
 			}`,
 			checkAllFields: true,
@@ -54,9 +53,9 @@ func TestLoadConfig(t *testing.T) {
 					"nonce_ttl_seconds": 0,
 					"pow_min_difficulty": 0,
 					"pow_max_difficulty": 0,
-					"pow_window_seconds": 0
-				},
-				"policy": {}
+					"challenge_ttl_seconds": 0,
+					"ticket_ttl_seconds": 0
+				}
 			}`,
 			checkDefaults: true,
 		},
@@ -81,9 +80,9 @@ func TestLoadConfig(t *testing.T) {
 					"nonce_ttl_seconds": 1,
 					"pow_min_difficulty": 1,
 					"pow_max_difficulty": 1,
-					"pow_window_seconds": 1
-				},
-				"policy": {}
+					"challenge_ttl_seconds": 1,
+					"ticket_ttl_seconds": 1
+				}
 			}`,
 			wantErr: "global_secret must be at least 32 bytes",
 		},
@@ -98,9 +97,9 @@ func TestLoadConfig(t *testing.T) {
 					"nonce_ttl_seconds": 1,
 					"pow_min_difficulty": 1,
 					"pow_max_difficulty": 1,
-					"pow_window_seconds": 1
-				},
-				"policy": {}
+					"challenge_ttl_seconds": 1,
+					"ticket_ttl_seconds": 1
+				}
 			}`,
 			wantErr: "cookie_ttl_seconds must be greater than 0",
 		},
@@ -115,9 +114,9 @@ func TestLoadConfig(t *testing.T) {
 					"nonce_ttl_seconds": -1,
 					"pow_min_difficulty": 1,
 					"pow_max_difficulty": 1,
-					"pow_window_seconds": 1
-				},
-				"policy": {}
+					"challenge_ttl_seconds": 1,
+					"ticket_ttl_seconds": 1
+				}
 			}`,
 			wantErr: "nonce_ttl_seconds must be greater than 0",
 		},
@@ -132,9 +131,9 @@ func TestLoadConfig(t *testing.T) {
 					"nonce_ttl_seconds": 1,
 					"pow_min_difficulty": -1,
 					"pow_max_difficulty": 1,
-					"pow_window_seconds": 1
-				},
-				"policy": {}
+					"challenge_ttl_seconds": 1,
+					"ticket_ttl_seconds": 1
+				}
 			}`,
 			wantErr: "pow_min_difficulty must be greater than 0",
 		},
@@ -149,14 +148,14 @@ func TestLoadConfig(t *testing.T) {
 					"nonce_ttl_seconds": 1,
 					"pow_min_difficulty": 5,
 					"pow_max_difficulty": 4,
-					"pow_window_seconds": 1
-				},
-				"policy": {}
+					"challenge_ttl_seconds": 1,
+					"ticket_ttl_seconds": 1
+				}
 			}`,
 			wantErr: "pow_max_difficulty must be greater than or equal to pow_min_difficulty",
 		},
 		{
-			name: "error pow_window_seconds <= 0",
+			name: "error challenge_ttl_seconds <= 0",
 			jsonConfig: `{
 				"server": {"listen_address": "127.0.0.1:8080"},
 				"security": {
@@ -166,11 +165,28 @@ func TestLoadConfig(t *testing.T) {
 					"nonce_ttl_seconds": 1,
 					"pow_min_difficulty": 1,
 					"pow_max_difficulty": 1,
-					"pow_window_seconds": -1
-				},
-				"policy": {}
+					"challenge_ttl_seconds": -1,
+					"ticket_ttl_seconds": 1
+				}
 			}`,
-			wantErr: "pow_window_seconds must be greater than 0",
+			wantErr: "challenge_ttl_seconds must be greater than 0",
+		},
+		{
+			name: "error ticket_ttl_seconds <= 0",
+			jsonConfig: `{
+				"server": {"listen_address": "127.0.0.1:8080"},
+				"security": {
+					"global_secret": "12345678901234567890123456789012",
+					"cookie_name": "auth",
+					"cookie_ttl_seconds": 1,
+					"nonce_ttl_seconds": 1,
+					"pow_min_difficulty": 1,
+					"pow_max_difficulty": 1,
+					"challenge_ttl_seconds": 1,
+					"ticket_ttl_seconds": -1
+				}
+			}`,
+			wantErr: "ticket_ttl_seconds must be greater than 0",
 		},
 		{
 			name: "error missing listen_address",
@@ -183,14 +199,14 @@ func TestLoadConfig(t *testing.T) {
 					"nonce_ttl_seconds": 1,
 					"pow_min_difficulty": 1,
 					"pow_max_difficulty": 1,
-					"pow_window_seconds": 1
-				},
-				"policy": {}
+					"challenge_ttl_seconds": 1,
+					"ticket_ttl_seconds": 1
+				}
 			}`,
 			wantErr: "server.listen_address is required",
 		},
 		{
-			name: "error missing cookie_name",
+			name: "missing cookie_name applies default",
 			jsonConfig: `{
 				"server": {"listen_address": "127.0.0.1:8080"},
 				"security": {
@@ -200,11 +216,11 @@ func TestLoadConfig(t *testing.T) {
 					"nonce_ttl_seconds": 1,
 					"pow_min_difficulty": 1,
 					"pow_max_difficulty": 1,
-					"pow_window_seconds": 1
-				},
-				"policy": {}
+					"challenge_ttl_seconds": 1,
+					"ticket_ttl_seconds": 1
+				}
 			}`,
-			wantErr: "security.cookie_name is required",
+			checkCookieDefault: true,
 		},
 	}
 
@@ -283,11 +299,11 @@ func TestLoadConfig(t *testing.T) {
 				if cfg.Security.PowMaxDifficulty != 12 {
 					t.Fatalf("PowMaxDifficulty = %d, want 12", cfg.Security.PowMaxDifficulty)
 				}
-				if cfg.Security.PowWindowSeconds != 45 {
-					t.Fatalf("PowWindowSeconds = %d, want 45", cfg.Security.PowWindowSeconds)
+				if cfg.Security.ChallengeTTLSeconds != 45 {
+					t.Fatalf("ChallengeTTLSeconds = %d, want 45", cfg.Security.ChallengeTTLSeconds)
 				}
-				if cfg.Policy.ExternalListsPath != "/etc/mirror/policy.json" {
-					t.Fatalf("ExternalListsPath = %q, want %q", cfg.Policy.ExternalListsPath, "/etc/mirror/policy.json")
+				if cfg.Security.TicketTTLSeconds != 600 {
+					t.Fatalf("TicketTTLSeconds = %d, want 600", cfg.Security.TicketTTLSeconds)
 				}
 			}
 
@@ -307,8 +323,17 @@ func TestLoadConfig(t *testing.T) {
 				if cfg.Security.PowMaxDifficulty != 10 {
 					t.Fatalf("PowMaxDifficulty = %d, want 10", cfg.Security.PowMaxDifficulty)
 				}
-				if cfg.Security.PowWindowSeconds != 60 {
-					t.Fatalf("PowWindowSeconds = %d, want 60", cfg.Security.PowWindowSeconds)
+				if cfg.Security.ChallengeTTLSeconds != 30 {
+					t.Fatalf("ChallengeTTLSeconds = %d, want 30", cfg.Security.ChallengeTTLSeconds)
+				}
+				if cfg.Security.TicketTTLSeconds != 300 {
+					t.Fatalf("TicketTTLSeconds = %d, want 300", cfg.Security.TicketTTLSeconds)
+				}
+			}
+
+			if tt.checkCookieDefault {
+				if cfg.Security.CookieName != "auth_token" {
+					t.Fatalf("CookieName = %q, want %q", cfg.Security.CookieName, "auth_token")
 				}
 			}
 		})

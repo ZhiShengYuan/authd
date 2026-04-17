@@ -16,25 +16,22 @@ import (
 
 	_ "github.com/mirror-guard/auth-backend/internal/apidoc"
 	"github.com/mirror-guard/auth-backend/internal/config"
-	"github.com/mirror-guard/auth-backend/internal/cookie"
 	"github.com/mirror-guard/auth-backend/internal/handler"
 	"github.com/mirror-guard/auth-backend/internal/observability"
-	"github.com/mirror-guard/auth-backend/internal/pipeline"
-	"github.com/mirror-guard/auth-backend/internal/policy"
 	"github.com/mirror-guard/auth-backend/internal/state"
+	"github.com/mirror-guard/auth-backend/internal/ticket"
 )
 
 const (
-	pathAuthInline = "/api/auth_inline"
-	pathChallenge  = "/api/challenge"
-	pathVerifyPoW  = "/api/verify_pow"
-	pathHealthz    = "/healthz"
-	pathMetrics    = "/metrics"
+	pathChallenges       = "/api/challenges"
+	pathChallengesVerify = "/api/challenges/verify"
+	pathTickets          = "/api/tickets"
+	pathTicketsVerify    = "/api/tickets/verify"
+	pathHealthz          = "/healthz"
+	pathMetrics          = "/metrics"
 )
 
 var (
-	activeChallengeHandler *handler.ChallengeHandler
-	activeVerifyPoWHandler *handler.VerifyPoWHandler
 	// serveFn and shutdownFn are package-local seams used by tests.
 	// Defaults preserve production behavior by delegating to http.Server methods.
 	serveFn    = func(srv *http.Server, ln net.Listener) error { return srv.Serve(ln) }
@@ -43,7 +40,7 @@ var (
 
 // @title Mirror Guard Auth Gateway API
 // @version 1.0
-// @description Authentication gateway endpoints for inline authorization, challenge issuance, and PoW verification.
+// @description Internal JSON API for challenge and ticket workflows.
 // @license.name Apache-2.0
 // @license.url https://www.apache.org/licenses/LICENSE-2.0.html
 func main() {
@@ -68,14 +65,8 @@ func run(configPath string) error {
 		return fmt.Errorf("load config: %w", err)
 	}
 
-	pol, err := policy.LoadExternal(cfg.Policy.ExternalListsPath)
-	if err != nil {
-		return fmt.Errorf("load external policy: %w", err)
-	}
-	policyMgr := policy.NewManager(pol)
-
-	mux, p, authH := buildMux(policyMgr.Get(), cfg)
-	defer p.Close()
+	mux, stopMux := buildMux(cfg)
+	defer stopMux()
 
 	srv := &http.Server{
 		Handler:      mux,
@@ -98,13 +89,16 @@ func run(configPath string) error {
 	slog.Info("auth-gateway started",
 		"network", cfg.Server.ListenNetwork,
 		"address", cfg.Server.ListenAddress,
-		"auth_inline", pathAuthInline,
-		"challenge", pathChallenge,
-		"verify_pow", pathVerifyPoW,
+		"challenges", pathChallenges,
+		"challenges_verify", pathChallengesVerify,
+		"tickets", pathTickets,
+		"tickets_verify", pathTicketsVerify,
+		"healthz", pathHealthz,
+		"metrics", pathMetrics,
 	)
 
 	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
+	signal.Notify(sigCh, syscall.SIGTERM, syscall.SIGINT)
 	defer signal.Stop(sigCh)
 
 	for {
@@ -121,37 +115,6 @@ func run(configPath string) error {
 					_ = os.Remove(cfg.Server.ListenAddress)
 				}
 				return nil
-			case syscall.SIGHUP:
-				newCfg, reloadErr := config.LoadConfig(configPath)
-				if reloadErr != nil {
-					slog.Error("config reload failed", "error", reloadErr)
-					continue
-				}
-				newPol, reloadPolicyErr := policy.LoadExternal(newCfg.Policy.ExternalListsPath)
-				if reloadPolicyErr != nil {
-					slog.Error("policy reload failed", "error", reloadPolicyErr)
-					continue
-				}
-				policyMgr.Set(newPol)
-				p.Reload(newPol)
-				authH.SetPolicy(newPol)
-				p.SetConfig(newCfg)
-				if activeChallengeHandler != nil {
-					activeChallengeHandler.SetConfig(newCfg)
-				}
-				if activeVerifyPoWHandler != nil {
-					activeVerifyPoWHandler.SetConfig(newCfg)
-				}
-
-				if securityConfigChanged(cfg, newCfg) {
-					cookieMgr := cookie.NewManager(newCfg.Security.GlobalSecret, newCfg.Security.CookieName, newCfg.Security.CookieTTLSeconds)
-					p.SetCookieManager(cookieMgr)
-					if activeVerifyPoWHandler != nil {
-						activeVerifyPoWHandler.SetCookieManager(cookieMgr)
-					}
-				}
-				cfg = newCfg
-				slog.Info("config and policy reloaded")
 			}
 		case err = <-serveErr:
 			if err != nil {
@@ -161,25 +124,24 @@ func run(configPath string) error {
 	}
 }
 
-func buildMux(pol *policy.Set, cfgs ...*config.Config) (*http.ServeMux, *pipeline.Pipeline, *handler.AuthInlineHandler) {
+func buildMux(cfgs ...*config.Config) (*http.ServeMux, func()) {
 	mux := http.NewServeMux()
 	cfg := defaultMuxConfig()
 	if len(cfgs) > 0 && cfgs[0] != nil {
 		cfg = cfgs[0]
 	}
 	store := state.NewStore()
-	cookieMgr := cookie.NewManager(cfg.Security.GlobalSecret, cfg.Security.CookieName, cfg.Security.CookieTTLSeconds)
+	ticketManager := ticket.NewManager(cfg.Security.GlobalSecret, cfg.Security.TicketTTLSeconds)
+	ticketManager.StartCleanup(30 * time.Second)
+	challengeConfig := handler.NewChallengeConfigHandler(cfg, store)
+	challengeVerify := handler.NewChallengeVerifyHandler(cfg, store)
+	ticketIssue := handler.NewTicketIssueHandler(cfg, ticketManager)
+	ticketVerify := handler.NewTicketVerifyHandler(cfg, ticketManager)
 
-	authInline := handler.NewAuthInlineHandler(pol)
-	challenge := handler.NewChallengeHandler(cfg, store)
-	verifyPoW := handler.NewVerifyPoWHandler(cfg, store, cookieMgr)
-	p := pipeline.NewPipeline(pol, authInline, cfg, store, cookieMgr)
-	activeChallengeHandler = challenge
-	activeVerifyPoWHandler = verifyPoW
-
-	mux.Handle(pathAuthInline, p)
-	mux.Handle(pathChallenge, challenge)
-	mux.Handle(pathVerifyPoW, verifyPoW)
+	mux.Handle(pathChallenges, challengeConfig)
+	mux.Handle(pathChallengesVerify, challengeVerify)
+	mux.Handle(pathTickets, ticketIssue)
+	mux.Handle(pathTicketsVerify, ticketVerify)
 	mux.Handle(pathHealthz, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = r
 		w.WriteHeader(http.StatusOK)
@@ -187,27 +149,22 @@ func buildMux(pol *policy.Set, cfgs ...*config.Config) (*http.ServeMux, *pipelin
 	}))
 	mux.Handle(pathMetrics, observability.MetricsHandler())
 
-	return mux, p, authInline
-}
-
-func securityConfigChanged(oldCfg, newCfg *config.Config) bool {
-	if oldCfg == nil || newCfg == nil {
-		return false
+	return mux, func() {
+		store.Stop()
+		ticketManager.Stop()
 	}
-	return oldCfg.Security.GlobalSecret != newCfg.Security.GlobalSecret ||
-		oldCfg.Security.CookieName != newCfg.Security.CookieName ||
-		oldCfg.Security.CookieTTLSeconds != newCfg.Security.CookieTTLSeconds
 }
 
 func defaultMuxConfig() *config.Config {
 	return &config.Config{
 		Security: config.SecurityConfig{
-			CookieName:       "auth_token",
-			CookieTTLSeconds: 15,
-			NonceTTLSeconds:  30,
-			PowMinDifficulty: 4,
-			PowMaxDifficulty: 10,
-			PowWindowSeconds: 60,
+			CookieName:          "auth_token",
+			CookieTTLSeconds:    15,
+			NonceTTLSeconds:     30,
+			PowMinDifficulty:    4,
+			PowMaxDifficulty:    10,
+			ChallengeTTLSeconds: 30,
+			TicketTTLSeconds:    300,
 		},
 	}
 }

@@ -63,13 +63,14 @@ func NewTestConfig() *config.Config {
 			ListenAddress: "127.0.0.1:8080",
 		},
 		Security: config.SecurityConfig{
-			GlobalSecret:     "0123456789abcdef0123456789abcdef",
-			CookieName:       "auth_token",
-			CookieTTLSeconds: 15,
-			NonceTTLSeconds:  30,
-			PowMinDifficulty: 1,
-			PowMaxDifficulty: 1,
-			PowWindowSeconds: 60,
+			GlobalSecret:        "0123456789abcdef0123456789abcdef",
+			CookieName:          "auth_token",
+			CookieTTLSeconds:    15,
+			NonceTTLSeconds:     30,
+			PowMinDifficulty:    1,
+			PowMaxDifficulty:    1,
+			ChallengeTTLSeconds: 30,
+			TicketTTLSeconds:    300,
 		},
 	}
 }

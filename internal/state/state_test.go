@@ -440,14 +440,183 @@ func TestCookieClaimGuardAndInvalidStoredType(t *testing.T) {
 	}
 }
 
+func TestConfigureAndLookup(t *testing.T) {
+	store := NewStore()
+	t.Cleanup(store.Stop)
+
+	err := store.ChallengeStore.Configure("challenge-1", 7, "/login", "203.0.113.10", "ua-1", time.Second)
+	if err != nil {
+		t.Fatalf("configure error: %v", err)
+	}
+
+	entry, err := store.ChallengeStore.Lookup("challenge-1")
+	if err != nil {
+		t.Fatalf("lookup error: %v", err)
+	}
+	if entry.ChallengeID != "challenge-1" {
+		t.Fatalf("challenge id = %q, want %q", entry.ChallengeID, "challenge-1")
+	}
+	if entry.Difficulty != 7 {
+		t.Fatalf("difficulty = %d, want %d", entry.Difficulty, 7)
+	}
+	if entry.BindURL != "/login" || entry.BindIP != "203.0.113.10" || entry.BindUA != "ua-1" {
+		t.Fatalf("unexpected bindings: url=%q ip=%q ua=%q", entry.BindURL, entry.BindIP, entry.BindUA)
+	}
+}
+
+func TestConfigureDuplicateFails(t *testing.T) {
+	store := NewStore()
+	t.Cleanup(store.Stop)
+
+	err := store.ChallengeStore.Configure("challenge-dup", 4, "/", "ip", "ua", time.Second)
+	if err != nil {
+		t.Fatalf("first configure error: %v", err)
+	}
+
+	err = store.ChallengeStore.Configure("challenge-dup", 8, "/x", "ip2", "ua2", time.Second)
+	if !errors.Is(err, ErrChallengeAlreadyExists) {
+		t.Fatalf("expected ErrChallengeAlreadyExists, got %v", err)
+	}
+}
+
+func TestConsumeOnce(t *testing.T) {
+	store := NewStore()
+	t.Cleanup(store.Stop)
+
+	err := store.ChallengeStore.Configure("challenge-consume", 5, "/submit", "198.51.100.1", "ua", time.Second)
+	if err != nil {
+		t.Fatalf("configure error: %v", err)
+	}
+
+	entry, err := store.ChallengeStore.Consume("challenge-consume")
+	if err != nil {
+		t.Fatalf("consume error: %v", err)
+	}
+	if entry.ChallengeID != "challenge-consume" {
+		t.Fatalf("challenge id = %q, want %q", entry.ChallengeID, "challenge-consume")
+	}
+}
+
+func TestConsumeReplay(t *testing.T) {
+	store := NewStore()
+	t.Cleanup(store.Stop)
+
+	err := store.ChallengeStore.Configure("challenge-replay", 3, "/", "ip", "ua", time.Second)
+	if err != nil {
+		t.Fatalf("configure error: %v", err)
+	}
+
+	if _, err := store.ChallengeStore.Consume("challenge-replay"); err != nil {
+		t.Fatalf("first consume error: %v", err)
+	}
+
+	if _, err := store.ChallengeStore.Consume("challenge-replay"); !errors.Is(err, ErrChallengeReplayed) {
+		t.Fatalf("expected ErrChallengeReplayed, got %v", err)
+	}
+}
+
+func TestLookupExpired(t *testing.T) {
+	store := NewStore()
+	t.Cleanup(store.Stop)
+
+	err := store.ChallengeStore.Configure("challenge-expired-lookup", 3, "/", "ip", "ua", 5*time.Millisecond)
+	if err != nil {
+		t.Fatalf("configure error: %v", err)
+	}
+
+	time.Sleep(15 * time.Millisecond)
+
+	if _, err := store.ChallengeStore.Lookup("challenge-expired-lookup"); !errors.Is(err, ErrChallengeExpired) {
+		t.Fatalf("expected ErrChallengeExpired, got %v", err)
+	}
+}
+
+func TestConsumeExpired(t *testing.T) {
+	store := NewStore()
+	t.Cleanup(store.Stop)
+
+	err := store.ChallengeStore.Configure("challenge-expired-consume", 3, "/", "ip", "ua", 5*time.Millisecond)
+	if err != nil {
+		t.Fatalf("configure error: %v", err)
+	}
+
+	time.Sleep(15 * time.Millisecond)
+
+	if _, err := store.ChallengeStore.Consume("challenge-expired-consume"); !errors.Is(err, ErrChallengeExpired) {
+		t.Fatalf("expected ErrChallengeExpired, got %v", err)
+	}
+}
+
+func TestConcurrentConsume(t *testing.T) {
+	store := NewStore()
+	t.Cleanup(store.Stop)
+
+	err := store.ChallengeStore.Configure("challenge-concurrent", 6, "/", "ip", "ua", time.Second)
+	if err != nil {
+		t.Fatalf("configure error: %v", err)
+	}
+
+	const goroutines = 128
+	var wg sync.WaitGroup
+	var successes atomic.Int64
+
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := store.ChallengeStore.Consume("challenge-concurrent"); err == nil {
+				successes.Add(1)
+			}
+		}()
+	}
+
+	wg.Wait()
+
+	if got := successes.Load(); got != 1 {
+		t.Fatalf("expected exactly one successful consume, got %d", got)
+	}
+}
+
+func TestCleanup(t *testing.T) {
+	now := time.Now()
+	s := &Store{
+		QuotaStore: &QuotaStore{entries: map[string]*quotaEntry{
+			"expired": {windowStart: now.Add(-2 * time.Second), window: time.Second},
+		}},
+		NonceStore:     &NonceStore{},
+		ChallengeStore: &ChallengeStore{},
+		stopCh:         make(chan struct{}),
+	}
+	s.NonceStore.locks.Store("expired", now.Add(-time.Second).UnixNano())
+	s.ChallengeStore.challenges.Store("challenge-expired", &ChallengeEntry{ChallengeID: "challenge-expired", ExpiresAt: now.Add(-time.Second)})
+
+	s.wg.Add(1)
+	go s.cleanupLoop(time.Millisecond)
+
+	time.Sleep(5 * time.Millisecond)
+	close(s.stopCh)
+	s.wg.Wait()
+
+	if got := s.QuotaStore.Size(); got != 0 {
+		t.Fatalf("quota size after ticker cleanup = %d, want 0", got)
+	}
+	if got := s.NonceStore.Size(); got != 0 {
+		t.Fatalf("nonce size after ticker cleanup = %d, want 0", got)
+	}
+	if _, exists := s.ChallengeStore.challenges.Load("challenge-expired"); exists {
+		t.Fatal("expected expired challenge to be removed by cleanup loop")
+	}
+}
+
 func TestCleanupLoopRunsTickerCleanup(t *testing.T) {
 	now := time.Now()
 	s := &Store{
 		QuotaStore: &QuotaStore{entries: map[string]*quotaEntry{
 			"expired": {windowStart: now.Add(-2 * time.Second), window: time.Second},
 		}},
-		NonceStore: &NonceStore{},
-		stopCh:     make(chan struct{}),
+		NonceStore:     &NonceStore{},
+		ChallengeStore: &ChallengeStore{},
+		stopCh:         make(chan struct{}),
 	}
 	s.NonceStore.locks.Store("expired", now.Add(-time.Second).UnixNano())
 

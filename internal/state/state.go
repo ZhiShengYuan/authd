@@ -15,6 +15,13 @@ const (
 
 var errEmptyKey = errors.New("state: empty key")
 
+var (
+	ErrChallengeNotFound      = errors.New("state: challenge not found")
+	ErrChallengeExpired       = errors.New("state: challenge expired")
+	ErrChallengeReplayed      = errors.New("state: challenge replayed")
+	ErrChallengeAlreadyExists = errors.New("state: challenge already exists")
+)
+
 type quotaEntry struct {
 	counter     atomic.Int64
 	windowStart time.Time
@@ -34,10 +41,26 @@ type CookieConsumptionStore struct {
 	claims sync.Map
 }
 
+type ChallengeEntry struct {
+	ChallengeID string
+	Difficulty  int
+	BindURL     string
+	BindIP      string
+	BindUA      string
+	CreatedAt   time.Time
+	ExpiresAt   time.Time
+	Consumed    atomic.Bool
+}
+
+type ChallengeStore struct {
+	challenges sync.Map
+}
+
 type Store struct {
 	QuotaStore             *QuotaStore
 	NonceStore             *NonceStore
 	CookieConsumptionStore *CookieConsumptionStore
+	ChallengeStore         *ChallengeStore
 
 	stopOnce sync.Once
 	stopCh   chan struct{}
@@ -51,6 +74,7 @@ func NewStore() *Store {
 		},
 		NonceStore:             &NonceStore{},
 		CookieConsumptionStore: &CookieConsumptionStore{},
+		ChallengeStore:         &ChallengeStore{},
 		stopCh:                 make(chan struct{}),
 	}
 
@@ -79,10 +103,92 @@ func (s *Store) cleanupLoop(interval time.Duration) {
 			now := time.Now()
 			s.QuotaStore.cleanupExpired(now)
 			s.NonceStore.cleanupExpired(now)
+			s.ChallengeStore.cleanupExpired(now)
 		case <-s.stopCh:
 			return
 		}
 	}
+}
+
+func (c *ChallengeStore) Configure(challengeID string, difficulty int, bindURL, bindIP, bindUA string, ttl time.Duration) error {
+	if challengeID == "" {
+		return errEmptyKey
+	}
+	if ttl <= 0 {
+		ttl = DefaultNonceTTL
+	}
+
+	now := time.Now()
+	entry := &ChallengeEntry{
+		ChallengeID: challengeID,
+		Difficulty:  difficulty,
+		BindURL:     bindURL,
+		BindIP:      bindIP,
+		BindUA:      bindUA,
+		CreatedAt:   now,
+		ExpiresAt:   now.Add(ttl),
+	}
+
+	_, loaded := c.challenges.LoadOrStore(challengeID, entry)
+	if loaded {
+		return ErrChallengeAlreadyExists
+	}
+
+	return nil
+}
+
+func (c *ChallengeStore) Lookup(challengeID string) (*ChallengeEntry, error) {
+	if challengeID == "" {
+		return nil, errEmptyKey
+	}
+
+	actual, ok := c.challenges.Load(challengeID)
+	if !ok {
+		return nil, ErrChallengeNotFound
+	}
+
+	entry, ok := actual.(*ChallengeEntry)
+	if !ok {
+		return nil, ErrChallengeNotFound
+	}
+
+	if time.Now().After(entry.ExpiresAt) {
+		c.challenges.Delete(challengeID)
+		return nil, ErrChallengeExpired
+	}
+
+	if entry.Consumed.Load() {
+		return nil, ErrChallengeReplayed
+	}
+
+	return entry, nil
+}
+
+func (c *ChallengeStore) Consume(challengeID string) (*ChallengeEntry, error) {
+	if challengeID == "" {
+		return nil, errEmptyKey
+	}
+
+	actual, ok := c.challenges.Load(challengeID)
+	if !ok {
+		return nil, ErrChallengeNotFound
+	}
+
+	entry, ok := actual.(*ChallengeEntry)
+	if !ok {
+		return nil, ErrChallengeNotFound
+	}
+
+	if time.Now().After(entry.ExpiresAt) {
+		c.challenges.Delete(challengeID)
+		return nil, ErrChallengeExpired
+	}
+
+	if !entry.Consumed.CompareAndSwap(false, true) {
+		return nil, ErrChallengeReplayed
+	}
+
+	return entry, nil
 }
 
 func (q *QuotaStore) Increment(subnetKey string, window time.Duration) (int64, error) {
@@ -198,6 +304,16 @@ func (n *NonceStore) cleanupExpired(now time.Time) {
 		expiresAt, ok := value.(int64)
 		if ok && nowNano > expiresAt {
 			n.locks.Delete(key)
+		}
+		return true
+	})
+}
+
+func (c *ChallengeStore) cleanupExpired(now time.Time) {
+	c.challenges.Range(func(key, value any) bool {
+		entry, ok := value.(*ChallengeEntry)
+		if ok && now.After(entry.ExpiresAt) {
+			c.challenges.Delete(key)
 		}
 		return true
 	})

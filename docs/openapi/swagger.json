@@ -1,7 +1,7 @@
 {
     "swagger": "2.0",
     "info": {
-        "description": "Authentication gateway endpoints for inline authorization, challenge issuance, and PoW verification.",
+        "description": "Internal JSON API for challenge and ticket workflows.",
         "title": "Mirror Guard Auth Gateway API",
         "contact": {},
         "license": {
@@ -11,143 +11,9 @@
         "version": "1.0"
     },
     "paths": {
-        "/api/auth_inline": {
-            "get": {
-                "description": "Header-driven decision endpoint for Nginx auth_request integrations. Returns status/header outcomes only (no JSON response body on any status). Required headers: X-Real-IP and X-URL. Optional headers: X-UA and X-Request-ID. Optional Cookie header carries the auth cookie and any issued cookie uses Secure=true, HttpOnly=true, SameSite=Lax.",
-                "consumes": [
-                    "application/json"
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "auth"
-                ],
-                "summary": "Inline authorization decision",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Client IP address",
-                        "name": "X-Real-IP",
-                        "in": "header",
-                        "required": true
-                    },
-                    {
-                        "type": "string",
-                        "description": "Original requested URL",
-                        "name": "X-URL",
-                        "in": "header",
-                        "required": true
-                    },
-                    {
-                        "type": "string",
-                        "description": "Client user agent",
-                        "name": "X-UA",
-                        "in": "header"
-                    },
-                    {
-                        "type": "string",
-                        "description": "Request correlation identifier",
-                        "name": "X-Request-ID",
-                        "in": "header"
-                    },
-                    {
-                        "type": "string",
-                        "description": "Auth cookie for token validation",
-                        "name": "Cookie",
-                        "in": "header"
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "Allowed"
-                    },
-                    "302": {
-                        "description": "Redirect (Location header)",
-                        "schema": {
-                            "type": "string"
-                        }
-                    },
-                    "401": {
-                        "description": "Challenge required — responds with X-Auth-Action: challenge header only, no body"
-                    },
-                    "403": {
-                        "description": "Forbidden"
-                    },
-                    "444": {
-                        "description": "Connection dropped (Nginx-specific)"
-                    },
-                    "503": {
-                        "description": "Service unavailable"
-                    }
-                }
-            }
-        },
-        "/api/challenge": {
-            "get": {
-                "description": "Returns PoW challenge parameters for a protected target. Requires X-Real-IP header; X-URL header is preferred, and if absent, the pow_target cookie is used as fallback. X-UA is optional.",
-                "consumes": [
-                    "application/json"
-                ],
-                "produces": [
-                    "application/json"
-                ],
-                "tags": [
-                    "auth"
-                ],
-                "summary": "Issue proof-of-work challenge",
-                "parameters": [
-                    {
-                        "type": "string",
-                        "description": "Client IP address",
-                        "name": "X-Real-IP",
-                        "in": "header",
-                        "required": true
-                    },
-                    {
-                        "type": "string",
-                        "description": "Original requested URL (falls back to pow_target cookie if absent)",
-                        "name": "X-URL",
-                        "in": "header"
-                    },
-                    {
-                        "type": "string",
-                        "description": "Client user agent",
-                        "name": "X-UA",
-                        "in": "header"
-                    }
-                ],
-                "responses": {
-                    "200": {
-                        "description": "OK",
-                        "schema": {
-                            "$ref": "#/definitions/apidoc.ChallengeResponse"
-                        }
-                    },
-                    "400": {
-                        "description": "Plain text error: 'invalid client ip' or 'missing X-URL header'",
-                        "schema": {
-                            "type": "string"
-                        }
-                    },
-                    "405": {
-                        "description": "Method not allowed",
-                        "schema": {
-                            "type": "string"
-                        }
-                    },
-                    "500": {
-                        "description": "Internal server error",
-                        "schema": {
-                            "type": "string"
-                        }
-                    }
-                }
-            }
-        },
-        "/api/verify_pow": {
+        "/api/challenges": {
             "post": {
-                "description": "Validates submitted PoW, prevents nonce replay, then redirects with an auth cookie. Requires X-Real-IP header; X-UA is optional. Accepts JSON body (modeled in OpenAPI spec). The runtime also accepts application/x-www-form-urlencoded form submissions with the same field names, but this is not modeled in the spec for Swagger 2.0 compatibility.",
+                "description": "Creates a challenge record and returns a signed prefix bound to challenge_id, difficulty, and bind matrix.",
                 "consumes": [
                     "application/json"
                 ],
@@ -155,50 +21,83 @@
                     "application/json"
                 ],
                 "tags": [
-                    "auth"
+                    "challenges"
                 ],
-                "summary": "Verify proof-of-work submission",
+                "summary": "Configure challenge",
                 "parameters": [
                     {
-                        "type": "string",
-                        "description": "Client IP address",
-                        "name": "X-Real-IP",
-                        "in": "header",
-                        "required": true
-                    },
-                    {
-                        "type": "string",
-                        "description": "Client user agent",
-                        "name": "X-UA",
-                        "in": "header"
-                    },
-                    {
-                        "description": "PoW submission",
+                        "description": "Challenge configuration payload",
                         "name": "body",
                         "in": "body",
                         "required": true,
                         "schema": {
-                            "$ref": "#/definitions/apidoc.VerifyPoWRequest"
+                            "$ref": "#/definitions/api.ChallengeConfigRequest"
                         }
                     }
                 ],
                 "responses": {
-                    "302": {
-                        "description": "Redirect to target with cookie (Set-Cookie and Location headers)",
+                    "201": {
+                        "description": "success=true, data=api.ChallengeConfigData",
                         "schema": {
-                            "type": "string"
+                            "$ref": "#/definitions/api.ResponseEnvelope"
                         }
                     },
                     "400": {
-                        "description": "JSON-shaped error body via http.Error",
+                        "description": "success=false, error.code=invalid_request",
                         "schema": {
-                            "$ref": "#/definitions/apidoc.VerifyPoWError"
+                            "$ref": "#/definitions/api.ResponseEnvelope"
                         }
                     },
-                    "403": {
-                        "description": "JSON-shaped error body via http.Error",
+                    "405": {
+                        "description": "Method not allowed",
                         "schema": {
-                            "$ref": "#/definitions/apidoc.VerifyPoWError"
+                            "type": "string"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/challenges/verify": {
+            "post": {
+                "description": "Consumes a configured challenge_id and validates nonce+prefix. Successful verification marks the challenge as used.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "challenges"
+                ],
+                "summary": "Verify configured challenge",
+                "parameters": [
+                    {
+                        "description": "Challenge verification payload",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/api.ChallengeVerifyRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "success=true, data=api.ChallengeVerifyData",
+                        "schema": {
+                            "$ref": "#/definitions/api.ResponseEnvelope"
+                        }
+                    },
+                    "400": {
+                        "description": "success=false, error.code=invalid_request",
+                        "schema": {
+                            "$ref": "#/definitions/api.ResponseEnvelope"
+                        }
+                    },
+                    "404": {
+                        "description": "success=false, error.code=challenge_not_found",
+                        "schema": {
+                            "$ref": "#/definitions/api.ResponseEnvelope"
                         }
                     },
                     "405": {
@@ -207,10 +106,120 @@
                             "type": "string"
                         }
                     },
-                    "503": {
-                        "description": "Service unavailable — may be JSON-shaped error or plain text",
+                    "409": {
+                        "description": "success=false, error.code=challenge_replayed",
+                        "schema": {
+                            "$ref": "#/definitions/api.ResponseEnvelope"
+                        }
+                    },
+                    "410": {
+                        "description": "success=false, error.code=challenge_expired",
+                        "schema": {
+                            "$ref": "#/definitions/api.ResponseEnvelope"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/tickets": {
+            "post": {
+                "description": "Issues a multi-use ticket bound to the provided bind matrix.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "tickets"
+                ],
+                "summary": "Issue ticket",
+                "parameters": [
+                    {
+                        "description": "Ticket issue payload",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/api.TicketIssueRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "201": {
+                        "description": "success=true, data=api.TicketIssueData",
+                        "schema": {
+                            "$ref": "#/definitions/api.ResponseEnvelope"
+                        }
+                    },
+                    "400": {
+                        "description": "success=false, error.code=invalid_request or ticket_exhausted",
+                        "schema": {
+                            "$ref": "#/definitions/api.ResponseEnvelope"
+                        }
+                    },
+                    "405": {
+                        "description": "Method not allowed",
                         "schema": {
                             "type": "string"
+                        }
+                    }
+                }
+            }
+        },
+        "/api/tickets/verify": {
+            "post": {
+                "description": "Verifies a ticket against bind matrix and consumes one use on each successful check.",
+                "consumes": [
+                    "application/json"
+                ],
+                "produces": [
+                    "application/json"
+                ],
+                "tags": [
+                    "tickets"
+                ],
+                "summary": "Verify ticket",
+                "parameters": [
+                    {
+                        "description": "Ticket verify payload",
+                        "name": "body",
+                        "in": "body",
+                        "required": true,
+                        "schema": {
+                            "$ref": "#/definitions/api.TicketVerifyRequest"
+                        }
+                    }
+                ],
+                "responses": {
+                    "200": {
+                        "description": "success=true, data=api.TicketVerifyData",
+                        "schema": {
+                            "$ref": "#/definitions/api.ResponseEnvelope"
+                        }
+                    },
+                    "400": {
+                        "description": "success=false, error.code=invalid_request or ticket_invalid",
+                        "schema": {
+                            "$ref": "#/definitions/api.ResponseEnvelope"
+                        }
+                    },
+                    "404": {
+                        "description": "success=false, error.code=ticket_not_found",
+                        "schema": {
+                            "$ref": "#/definitions/api.ResponseEnvelope"
+                        }
+                    },
+                    "405": {
+                        "description": "Method not allowed",
+                        "schema": {
+                            "type": "string"
+                        }
+                    },
+                    "410": {
+                        "description": "success=false, error.code=ticket_expired or ticket_exhausted",
+                        "schema": {
+                            "$ref": "#/definitions/api.ResponseEnvelope"
                         }
                     }
                 }
@@ -218,53 +227,90 @@
         }
     },
     "definitions": {
-        "apidoc.ChallengeResponse": {
+        "api.BindMatrix": {
             "type": "object",
             "properties": {
+                "ip": {
+                    "type": "string"
+                },
+                "ua": {
+                    "type": "string"
+                },
+                "url": {
+                    "type": "string"
+                }
+            }
+        },
+        "api.ChallengeConfigRequest": {
+            "type": "object",
+            "properties": {
+                "bind_matrix": {
+                    "$ref": "#/definitions/api.BindMatrix"
+                },
+                "challenge_id": {
+                    "type": "string"
+                },
                 "difficulty": {
-                    "description": "Difficulty is the required number of leading zero bits/characters for PoW validation.",
-                    "type": "integer",
-                    "example": 5
-                },
-                "prefix": {
-                    "description": "Prefix is the signed challenge prefix tied to client subnet and target.",
-                    "type": "string",
-                    "example": "1700000000:abcdef12:signaturehex"
-                },
-                "target": {
-                    "description": "Target is the protected resource URL that this challenge authorizes when solved.",
-                    "type": "string",
-                    "example": "https://mirror.example.com/file.iso"
+                    "type": "integer"
                 }
             }
         },
-        "apidoc.VerifyPoWError": {
+        "api.ChallengeVerifyRequest": {
             "type": "object",
             "properties": {
-                "error": {
-                    "description": "Error is a machine-readable error code for programmatic handling.",
-                    "type": "string",
-                    "example": "invalid proof of work"
-                }
-            }
-        },
-        "apidoc.VerifyPoWRequest": {
-            "type": "object",
-            "properties": {
+                "challenge_id": {
+                    "type": "string"
+                },
                 "nonce": {
-                    "description": "Nonce is the client-computed value that satisfies the requested PoW difficulty.",
-                    "type": "string",
-                    "example": "42"
+                    "type": "string"
                 },
                 "prefix": {
-                    "description": "Prefix is the signed challenge prefix returned by the challenge endpoint.",
-                    "type": "string",
-                    "example": "1700000000:abcdef12:signaturehex"
+                    "type": "string"
+                }
+            }
+        },
+        "api.EnvelopeError": {
+            "type": "object",
+            "properties": {
+                "code": {
+                    "type": "string"
                 },
-                "target_uri": {
-                    "description": "TargetURI is the original protected URL to redirect to after successful verification.",
-                    "type": "string",
-                    "example": "https://mirror.example.com/file.iso"
+                "message": {
+                    "type": "string"
+                }
+            }
+        },
+        "api.ResponseEnvelope": {
+            "type": "object",
+            "properties": {
+                "data": {},
+                "error": {
+                    "$ref": "#/definitions/api.EnvelopeError"
+                },
+                "success": {
+                    "type": "boolean"
+                }
+            }
+        },
+        "api.TicketIssueRequest": {
+            "type": "object",
+            "properties": {
+                "bind_matrix": {
+                    "$ref": "#/definitions/api.BindMatrix"
+                },
+                "uses": {
+                    "type": "integer"
+                }
+            }
+        },
+        "api.TicketVerifyRequest": {
+            "type": "object",
+            "properties": {
+                "bind_matrix": {
+                    "$ref": "#/definitions/api.BindMatrix"
+                },
+                "ticket": {
+                    "type": "string"
                 }
             }
         }

@@ -10,7 +10,6 @@ import (
 type Config struct {
 	Server   ServerConfig   `json:"server"`
 	Security SecurityConfig `json:"security"`
-	Policy   PolicyConfig   `json:"policy"`
 }
 
 type ServerConfig struct {
@@ -26,11 +25,9 @@ type SecurityConfig struct {
 
 	PowMinDifficulty int `json:"pow_min_difficulty"`
 	PowMaxDifficulty int `json:"pow_max_difficulty"`
-	PowWindowSeconds int `json:"pow_window_seconds"`
-}
 
-type PolicyConfig struct {
-	ExternalListsPath string `json:"external_lists_path"`
+	ChallengeTTLSeconds int `json:"challenge_ttl_seconds"`
+	TicketTTLSeconds    int `json:"ticket_ttl_seconds"`
 }
 
 func LoadConfig(path string) (*Config, error) {
@@ -57,6 +54,10 @@ func applyDefaults(cfg *Config) {
 		cfg.Server.ListenNetwork = "tcp"
 	}
 
+	if cfg.Security.CookieName == "" {
+		cfg.Security.CookieName = "auth_token"
+	}
+
 	if cfg.Security.CookieTTLSeconds == 0 {
 		cfg.Security.CookieTTLSeconds = 15
 	}
@@ -69,8 +70,11 @@ func applyDefaults(cfg *Config) {
 	if cfg.Security.PowMaxDifficulty == 0 {
 		cfg.Security.PowMaxDifficulty = 10
 	}
-	if cfg.Security.PowWindowSeconds == 0 {
-		cfg.Security.PowWindowSeconds = 60
+	if cfg.Security.ChallengeTTLSeconds == 0 {
+		cfg.Security.ChallengeTTLSeconds = 30
+	}
+	if cfg.Security.TicketTTLSeconds == 0 {
+		cfg.Security.TicketTTLSeconds = 300
 	}
 }
 
@@ -95,16 +99,16 @@ func validateConfig(cfg *Config) error {
 		return errors.New("pow_max_difficulty must be greater than or equal to pow_min_difficulty")
 	}
 
-	if cfg.Security.PowWindowSeconds <= 0 {
-		return errors.New("pow_window_seconds must be greater than 0")
+	if cfg.Security.ChallengeTTLSeconds <= 0 {
+		return errors.New("challenge_ttl_seconds must be greater than 0")
+	}
+
+	if cfg.Security.TicketTTLSeconds <= 0 {
+		return errors.New("ticket_ttl_seconds must be greater than 0")
 	}
 
 	if cfg.Server.ListenAddress == "" {
 		return errors.New("server.listen_address is required")
-	}
-
-	if cfg.Security.CookieName == "" {
-		return errors.New("security.cookie_name is required")
 	}
 
 	return nil
