@@ -6,6 +6,7 @@ const (
 	ErrChallengeExpired  = "challenge_expired"
 	ErrChallengeReplayed = "challenge_replayed"
 	ErrChallengeInvalid  = "challenge_invalid"
+	ErrInvalidPoW        = "invalid_pow"
 	ErrTicketNotFound    = "ticket_not_found"
 	ErrTicketExpired     = "ticket_expired"
 	ErrTicketExhausted   = "ticket_exhausted"

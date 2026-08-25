@@ -58,6 +58,33 @@ func TestMetricsHandlerReturnsPrometheusTextFormat(t *testing.T) {
 	if !strings.Contains(contentType, "text/plain") {
 		t.Fatalf("expected Prometheus text format, got %q", contentType)
 	}
+	metrics := rr.Body.String()
+	if !strings.Contains(metrics, "go_goroutines ") {
+		t.Fatal("Go runtime collector is missing")
+	}
+	if !strings.Contains(metrics, "process_cpu_seconds_total ") {
+		t.Fatal("process collector is missing")
+	}
+	if !strings.Contains(metrics, `auth_build_info{service="test-service",version="test-version"} 1`) {
+		t.Fatal("build information metric is missing")
+	}
+}
+
+func TestInstrumentHandlerRecordsBoundedLabels(t *testing.T) {
+	handler := InstrumentHandler("challenge_verify", http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusConflict)
+	}))
+	req := httptest.NewRequest(http.MethodPost, "/api/challenges/verify", nil)
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	metrics := scrapeMetrics(t)
+	if !strings.Contains(metrics, `auth_http_requests_total{handler="challenge_verify",method="POST",status="409"}`) {
+		t.Fatal("instrumented request counter sample is missing")
+	}
+	if !strings.Contains(metrics, `auth_handler_duration_seconds_count{action="409",handler="challenge_verify"}`) {
+		t.Fatal("instrumented latency sample is missing")
+	}
 }
 
 func TestRecordAuthDecisionIncrementsCounter(t *testing.T) {

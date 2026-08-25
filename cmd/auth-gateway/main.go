@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/http/pprof"
 	"os"
 	"os/signal"
 	"runtime/debug"
@@ -32,6 +33,10 @@ const (
 )
 
 var (
+	// version is replaced by scripts/build-release.sh through -ldflags. Keep a
+	// useful fallback for ordinary `go build` and `go install` workflows.
+	version = "dev"
+
 	// serveFn and shutdownFn are package-local seams used by tests.
 	// Defaults preserve production behavior by delegating to http.Server methods.
 	serveFn    = func(srv *http.Server, ln net.Listener) error { return srv.Serve(ln) }
@@ -54,11 +59,13 @@ func main() {
 }
 
 func run(configPath string) error {
-	version := "dev"
-	if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" {
-		version = info.Main.Version
+	runtimeVersion := version
+	if runtimeVersion == "dev" {
+		if info, ok := debug.ReadBuildInfo(); ok && info.Main.Version != "" && info.Main.Version != "(devel)" {
+			runtimeVersion = info.Main.Version
+		}
 	}
-	observability.Init("mirror-guard-auth-gateway", version)
+	observability.Init("mirror-guard-auth-gateway", runtimeVersion)
 
 	cfg, err := config.LoadConfig(configPath)
 	if err != nil {
@@ -69,9 +76,12 @@ func run(configPath string) error {
 	defer stopMux()
 
 	srv := &http.Server{
-		Handler:      mux,
-		ReadTimeout:  5 * time.Second,
-		WriteTimeout: 10 * time.Second,
+		Handler:           mux,
+		ReadHeaderTimeout: 2 * time.Second,
+		ReadTimeout:       5 * time.Second,
+		WriteTimeout:      10 * time.Second,
+		IdleTimeout:       35 * time.Second,
+		MaxHeaderBytes:    16 << 10,
 	}
 
 	ln, err := createListener(cfg.Server.ListenNetwork, cfg.Server.ListenAddress)
@@ -138,16 +148,38 @@ func buildMux(cfgs ...*config.Config) (*http.ServeMux, func()) {
 	ticketIssue := handler.NewTicketIssueHandler(cfg, ticketManager)
 	ticketVerify := handler.NewTicketVerifyHandler(cfg, ticketManager)
 
-	mux.Handle(pathChallenges, challengeConfig)
-	mux.Handle(pathChallengesVerify, challengeVerify)
-	mux.Handle(pathTickets, ticketIssue)
-	mux.Handle(pathTicketsVerify, ticketVerify)
+	mux.Handle(pathChallenges, observability.InstrumentHandler(
+		"challenge_create", http.MaxBytesHandler(challengeConfig, 8<<10),
+	))
+	mux.Handle(pathChallengesVerify, observability.InstrumentHandler(
+		"challenge_verify", http.MaxBytesHandler(challengeVerify, 8<<10),
+	))
+	mux.Handle(pathTickets, observability.InstrumentHandler(
+		"ticket_issue", http.MaxBytesHandler(ticketIssue, 8<<10),
+	))
+	mux.Handle(pathTicketsVerify, observability.InstrumentHandler(
+		"ticket_verify", http.MaxBytesHandler(ticketVerify, 8<<10),
+	))
 	mux.Handle(pathHealthz, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		_ = r
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("ok"))
 	}))
-	mux.Handle(pathMetrics, observability.MetricsHandler())
+	metrics := observability.MetricsHandler()
+	mux.Handle(pathMetrics, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		observability.SetStateStoreSize("challenge", int(store.ChallengeStore.Size()))
+		observability.SetStateStoreSize("ticket", int(ticketManager.Size()))
+		observability.SetStateStoreSize("quota", store.QuotaStore.Size())
+		observability.SetStateStoreSize("nonce", store.NonceStore.Size())
+		metrics.ServeHTTP(w, r)
+	}))
+	if cfg.Server.EnablePprof {
+		mux.HandleFunc("/debug/pprof/", pprof.Index)
+		mux.HandleFunc("/debug/pprof/cmdline", pprof.Cmdline)
+		mux.HandleFunc("/debug/pprof/profile", pprof.Profile)
+		mux.HandleFunc("/debug/pprof/symbol", pprof.Symbol)
+		mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
+	}
 
 	return mux, func() {
 		store.Stop()
@@ -164,7 +196,7 @@ func defaultMuxConfig() *config.Config {
 			PowMinDifficulty:    4,
 			PowMaxDifficulty:    10,
 			ChallengeTTLSeconds: 30,
-			TicketTTLSeconds:    300,
+			TicketTTLSeconds:    15,
 		},
 	}
 }

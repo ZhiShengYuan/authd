@@ -9,6 +9,9 @@ cov-*.out
 coverage_*.out
 coverage-pipeline.html
 
+# Local release artifacts
+/dist/
+
 # Temp files
 *.tmp
 *.log
