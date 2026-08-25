@@ -5,12 +5,15 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/mirror-guard/auth-backend/internal/expiry"
 )
 
 const (
 	DefaultNonceTTL      = 30 * time.Second
 	DefaultQuotaWindow   = 60 * time.Second
 	DefaultCleanupTicker = 10 * time.Second
+	ChallengeExpiryGrace = 10 * time.Second
 )
 
 var errEmptyKey = errors.New("state: empty key")
@@ -53,7 +56,10 @@ type ChallengeEntry struct {
 }
 
 type ChallengeStore struct {
-	challenges sync.Map
+	challenges  sync.Map
+	expirations *expiry.Queue
+	size        atomic.Int64
+	expiryOnce  sync.Once
 }
 
 type Store struct {
@@ -74,12 +80,13 @@ func NewStore() *Store {
 		},
 		NonceStore:             &NonceStore{},
 		CookieConsumptionStore: &CookieConsumptionStore{},
-		ChallengeStore:         &ChallengeStore{},
+		ChallengeStore:         newChallengeStore(),
 		stopCh:                 make(chan struct{}),
 	}
 
 	s.wg.Add(1)
 	go s.cleanupLoop(DefaultCleanupTicker)
+	s.ChallengeStore.expirations.Start()
 
 	return s
 }
@@ -88,6 +95,7 @@ func (s *Store) Stop() {
 	s.stopOnce.Do(func() {
 		close(s.stopCh)
 		s.wg.Wait()
+		s.ChallengeStore.expirations.Stop()
 	})
 }
 
@@ -103,14 +111,27 @@ func (s *Store) cleanupLoop(interval time.Duration) {
 			now := time.Now()
 			s.QuotaStore.cleanupExpired(now)
 			s.NonceStore.cleanupExpired(now)
-			s.ChallengeStore.cleanupExpired(now)
 		case <-s.stopCh:
 			return
 		}
 	}
 }
 
+func newChallengeStore() *ChallengeStore {
+	store := &ChallengeStore{}
+	store.ensureExpirationQueue()
+	return store
+}
+
+func (c *ChallengeStore) ensureExpirationQueue() {
+	c.expiryOnce.Do(func() {
+		c.expirations = expiry.New(c.expire)
+		c.expirations.Start()
+	})
+}
+
 func (c *ChallengeStore) Configure(challengeID string, difficulty int, bindURL, bindIP, bindUA string, ttl time.Duration) error {
+	c.ensureExpirationQueue()
 	if challengeID == "" {
 		return errEmptyKey
 	}
@@ -133,6 +154,11 @@ func (c *ChallengeStore) Configure(challengeID string, difficulty int, bindURL, 
 	if loaded {
 		return ErrChallengeAlreadyExists
 	}
+	c.size.Add(1)
+	if !c.expirations.Schedule(challengeID, entry.ExpiresAt.Add(ChallengeExpiryGrace)) {
+		c.delete(challengeID, entry)
+		return errors.New("state: challenge expiration queue stopped")
+	}
 
 	return nil
 }
@@ -153,7 +179,7 @@ func (c *ChallengeStore) Lookup(challengeID string) (*ChallengeEntry, error) {
 	}
 
 	if time.Now().After(entry.ExpiresAt) {
-		c.challenges.Delete(challengeID)
+		c.delete(challengeID, entry)
 		return nil, ErrChallengeExpired
 	}
 
@@ -180,7 +206,7 @@ func (c *ChallengeStore) Consume(challengeID string) (*ChallengeEntry, error) {
 	}
 
 	if time.Now().After(entry.ExpiresAt) {
-		c.challenges.Delete(challengeID)
+		c.delete(challengeID, entry)
 		return nil, ErrChallengeExpired
 	}
 
@@ -189,6 +215,53 @@ func (c *ChallengeStore) Consume(challengeID string) (*ChallengeEntry, error) {
 	}
 
 	return entry, nil
+}
+
+// Compact replaces a consumed challenge with a small replay tombstone. The
+// signed prefix and bind matrix are no longer needed after the first attempt,
+// but retaining the ID until expiry preserves the replay-specific response.
+func (c *ChallengeStore) Compact(challengeID string) {
+	actual, ok := c.challenges.Load(challengeID)
+	if !ok {
+		return
+	}
+	entry, ok := actual.(*ChallengeEntry)
+	if !ok || !entry.Consumed.Load() || (entry.BindURL == "" && entry.BindIP == "" && entry.BindUA == "") {
+		return
+	}
+	tombstone := &ChallengeEntry{
+		ChallengeID: entry.ChallengeID,
+		CreatedAt:   entry.CreatedAt,
+		ExpiresAt:   entry.ExpiresAt,
+	}
+	tombstone.Consumed.Store(true)
+	c.challenges.CompareAndSwap(challengeID, entry, tombstone)
+}
+
+func (c *ChallengeStore) Size() int64 {
+	if c == nil {
+		return 0
+	}
+	return c.size.Load()
+}
+
+func (c *ChallengeStore) delete(challengeID string, expected *ChallengeEntry) {
+	if c.challenges.CompareAndDelete(challengeID, expected) {
+		c.size.Add(-1)
+	}
+}
+
+func (c *ChallengeStore) expire(challengeID string, expectedExpiry time.Time) {
+	actual, ok := c.challenges.Load(challengeID)
+	if !ok {
+		return
+	}
+	entry, ok := actual.(*ChallengeEntry)
+	deleteAt := entry.ExpiresAt.Add(ChallengeExpiryGrace)
+	if !ok || !deleteAt.Equal(expectedExpiry) || time.Now().Before(deleteAt) {
+		return
+	}
+	c.delete(challengeID, entry)
 }
 
 func (q *QuotaStore) Increment(subnetKey string, window time.Duration) (int64, error) {
@@ -304,16 +377,6 @@ func (n *NonceStore) cleanupExpired(now time.Time) {
 		expiresAt, ok := value.(int64)
 		if ok && nowNano > expiresAt {
 			n.locks.Delete(key)
-		}
-		return true
-	})
-}
-
-func (c *ChallengeStore) cleanupExpired(now time.Time) {
-	c.challenges.Range(func(key, value any) bool {
-		entry, ok := value.(*ChallengeEntry)
-		if ok && now.After(entry.ExpiresAt) {
-			c.challenges.Delete(key)
 		}
 		return true
 	})

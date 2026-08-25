@@ -72,6 +72,7 @@ func (h *ChallengeVerifyHandler) ServeHTTP(w http.ResponseWriter, r *http.Reques
 		}
 		return
 	}
+	defer h.store.ChallengeStore.Compact(req.ChallengeID)
 
 	prefixData, err := pow.VerifyPrefixIntegrity(req.Prefix, []byte(h.config.Security.GlobalSecret), h.config.Security.ChallengeTTLSeconds)
 	if err != nil {
@@ -101,7 +102,7 @@ func (h *ChallengeVerifyHandler) ServeHTTP(w http.ResponseWriter, r *http.Reques
 	}
 
 	if !pow.Verify(req.Prefix, req.Nonce, entry.Difficulty) {
-		api.WriteError(w, http.StatusBadRequest, api.ErrChallengeInvalid, "challenge verification failed")
+		api.WriteError(w, http.StatusBadRequest, api.ErrInvalidPoW, "proof of work is invalid")
 		return
 	}
 

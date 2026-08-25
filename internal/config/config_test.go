@@ -326,8 +326,8 @@ func TestLoadConfig(t *testing.T) {
 				if cfg.Security.ChallengeTTLSeconds != 30 {
 					t.Fatalf("ChallengeTTLSeconds = %d, want 30", cfg.Security.ChallengeTTLSeconds)
 				}
-				if cfg.Security.TicketTTLSeconds != 300 {
-					t.Fatalf("TicketTTLSeconds = %d, want 300", cfg.Security.TicketTTLSeconds)
+				if cfg.Security.TicketTTLSeconds != 15 {
+					t.Fatalf("TicketTTLSeconds = %d, want 15", cfg.Security.TicketTTLSeconds)
 				}
 			}
 

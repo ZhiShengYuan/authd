@@ -588,8 +588,6 @@ func TestCleanup(t *testing.T) {
 		stopCh:         make(chan struct{}),
 	}
 	s.NonceStore.locks.Store("expired", now.Add(-time.Second).UnixNano())
-	s.ChallengeStore.challenges.Store("challenge-expired", &ChallengeEntry{ChallengeID: "challenge-expired", ExpiresAt: now.Add(-time.Second)})
-
 	s.wg.Add(1)
 	go s.cleanupLoop(time.Millisecond)
 
@@ -603,8 +601,22 @@ func TestCleanup(t *testing.T) {
 	if got := s.NonceStore.Size(); got != 0 {
 		t.Fatalf("nonce size after ticker cleanup = %d, want 0", got)
 	}
-	if _, exists := s.ChallengeStore.challenges.Load("challenge-expired"); exists {
-		t.Fatal("expected expired challenge to be removed by cleanup loop")
+}
+
+func TestChallengeExpiryQueueCallbackRemovesDueEntry(t *testing.T) {
+	store := newChallengeStore()
+	t.Cleanup(store.expirations.Stop)
+	expiresAt := time.Now().Add(-ChallengeExpiryGrace - time.Second)
+	entry := &ChallengeEntry{ChallengeID: "challenge-expired", ExpiresAt: expiresAt}
+	store.challenges.Store(entry.ChallengeID, entry)
+	store.size.Store(1)
+
+	store.expire(entry.ChallengeID, expiresAt.Add(ChallengeExpiryGrace))
+	if _, exists := store.challenges.Load(entry.ChallengeID); exists {
+		t.Fatal("expected due challenge to be removed by expiration queue callback")
+	}
+	if got := store.Size(); got != 0 {
+		t.Fatalf("challenge size after expiry = %d, want 0", got)
 	}
 }
 

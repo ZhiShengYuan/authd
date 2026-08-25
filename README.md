@@ -42,8 +42,9 @@ internal/api/                           # API 路径常量、请求响应类型�
 internal/config/                        # 配置结构、默认值、校验
 internal/handler/                       # 4 个核心接口处理器
 internal/pow/                           # PoW 校验、prefix 生成与完整性校验
-internal/state/                         # Challenge 内存状态存储与清理
-internal/ticket/                        # Ticket 签发、验证、状态管理与清理
+internal/expiry/                        # 单协程最小堆定时清理器
+internal/state/                         # Challenge 内存状态与到期清理
+internal/ticket/                        # Ticket 签发、验证、状态管理与到期清理
 internal/observability/                 # 指标暴露（/metrics）
 configs/config.example.json             # 示例配置
 scripts/race.sh, scripts/coverage.sh    # 测试辅助脚本
@@ -82,7 +83,7 @@ cp ./configs/config.example.json ./configs/config.local.json
 ### 2) 构建
 
 ```bash
-go build -o auth-gateway ./cmd/auth-gateway
+./scripts/build-release.sh v1.1.0
 ```
 
 ### 3) 启动
@@ -109,8 +110,9 @@ curl -i http://127.0.0.1:8080/metrics
 ```json
 {
   "server": {
-    "listen_network": "tcp",
-    "listen_address": "127.0.0.1:8080"
+    "listen_network": "unix",
+    "listen_address": "/run/auth-gateway/authd.sock",
+    "enable_pprof": true
   },
   "security": {
     "global_secret": "0123456789abcdef0123456789abcdef",
@@ -120,7 +122,7 @@ curl -i http://127.0.0.1:8080/metrics
     "pow_min_difficulty": 4,
     "pow_max_difficulty": 10,
     "challenge_ttl_seconds": 30,
-    "ticket_ttl_seconds": 300
+    "ticket_ttl_seconds": 15
   }
 }
 ```
@@ -131,8 +133,9 @@ curl -i http://127.0.0.1:8080/metrics
 
 | 字段 | 类型 | 必填 | 默认值 | 说明 |
 | --- | --- | --- | --- | --- |
-| `listen_network` | string | 否 | `tcp` | 监听网络，常用 `tcp` 或 `unix` |
+| `listen_network` | string | 否 | `tcp` | 监听网络，生产环境建议使用 `unix` |
 | `listen_address` | string | 是 | 无 | 监听地址，如 `127.0.0.1:8080` 或 unix socket 路径 |
+| `enable_pprof` | bool | 否 | `false` | 是否在内部监听端点开放 `/debug/pprof/`；仅应通过本机 socket 访问 |
 
 ### security
 
@@ -145,9 +148,7 @@ curl -i http://127.0.0.1:8080/metrics
 | `pow_min_difficulty` | int | 否 | `4` | 历史字段，配置加载时仍校验 > 0 |
 | `pow_max_difficulty` | int | 否 | `10` | 历史字段，必须 >= `pow_min_difficulty` |
 | `challenge_ttl_seconds` | int | 否 | `30` | 挑战过期秒数 |
-| `ticket_ttl_seconds` | int | 否 | `300` | 票据过期秒数 |
-
-> 注意：`configs/config.example.json` 里的 `pow_window_seconds` 与 `policy` 在当前 `Config` 结构体中未声明，Go JSON 反序列化会忽略这些未知字段。
+| `ticket_ttl_seconds` | int | 否 | `15` | 票据过期秒数 |
 
 ## API 接口规范
 
@@ -342,7 +343,7 @@ curl -X POST http://127.0.0.1:8080/api/challenges \
 
 失败状态与 envelope：
 
-- `400`: `invalid_request` 或 `challenge_invalid`
+- `400`: `invalid_request`、`challenge_invalid` 或 `invalid_pow`
 - `404`: `challenge_not_found`
 - `409`: `challenge_replayed`
 - `410`: `challenge_expired`
@@ -426,7 +427,7 @@ curl -X POST http://127.0.0.1:8080/api/challenges/verify \
 }
 ```
 
-5. `400 challenge_invalid`（签名, payload, bind_matrix, nonce 任一不匹配）
+5. `400 challenge_invalid`（签名、payload 或 bind_matrix 不匹配）
 
 ```json
 {
@@ -439,7 +440,20 @@ curl -X POST http://127.0.0.1:8080/api/challenges/verify \
 }
 ```
 
-6. `405 invalid_request`（方法错误）
+6. `400 invalid_pow`（nonce 未满足难度）
+
+```json
+{
+  "success": false,
+  "data": null,
+  "error": {
+    "code": "invalid_pow",
+    "message": "proof of work is invalid"
+  }
+}
+```
+
+7. `405 invalid_request`（方法错误）
 
 ```json
 {
@@ -892,7 +906,8 @@ if __name__ == "__main__":
 | `challenge_not_found` | 404 | 挑战不存在 | 验证时找不到对应 `challenge_id` |
 | `challenge_expired` | 410 | 挑战已过期 | 超过 `challenge_ttl_seconds` |
 | `challenge_replayed` | 409 | 挑战已被使用 | 同一 `challenge_id` 重放验证 |
-| `challenge_invalid` | 400 | 挑战校验失败 | prefix 签名失效, payload 不匹配, bind 不匹配, nonce 无效 |
+| `challenge_invalid` | 400 | 挑战内容校验失败 | prefix 签名失效、payload 不匹配或 bind 不匹配 |
+| `invalid_pow` | 400 | PoW 结果无效 | nonce 对应哈希未达到挑战难度 |
 | `ticket_not_found` | 404 | 票据不存在 | 票据状态未找到（例如已清理） |
 | `ticket_expired` | 410 | 票据已过期 | 超过 `ticket_ttl_seconds` |
 | `ticket_exhausted` | 410（验证时）/ 400（签发失败时） | 票据次数耗尽 | 验证扣减后次数小于 0，或签发路径内部失败 |
@@ -911,6 +926,14 @@ if __name__ == "__main__":
 ### 为什么 TTL 由服务端控制
 
 挑战与票据的 TTL 分别来自 `challenge_ttl_seconds` 和 `ticket_ttl_seconds`，客户端无法覆盖。统一由服务端掌控时效窗口，行为一致，审计简单。
+
+### 为什么不再定期全表扫描
+
+挑战和票据按到期时间放入共享的最小堆，由一个清理协程和一个可复用定时器唤醒。插入、消费和清理均不再周期性遍历全部状态；成功验证的挑战只保留轻量重放标记。这使 CPU 消耗与实际到期事件相关，避免高并发 PoW 下每隔固定周期扫描全部对象造成的延迟尖峰。票据默认有效期为 15 秒，过期后只额外保留短暂诊断窗口，以便区分“已过期”和“未找到”。
+
+### 运行边界与可观测性
+
+生产服务使用 Unix socket 与 Nginx 通信，避免内部 API 占用 TCP 监听和连接跟踪资源。服务限制请求头与请求体大小并设置读写超时；Prometheus 指标包含 API 请求速率、状态码、延迟、并发请求、状态对象数、Go 运行时、进程 CPU/内存和 `auth_build_info`。`pprof` 与指标共用内部监听端点，不应直接暴露到公网。
 
 ### 为什么 bind_matrix 使用结构化 JSON
 

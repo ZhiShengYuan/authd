@@ -49,7 +49,7 @@ func TestDefaultMuxConfig(t *testing.T) {
 	if cfg.Security.ChallengeTTLSeconds != 30 {
 		t.Fatalf("unexpected challenge ttl: %d", cfg.Security.ChallengeTTLSeconds)
 	}
-	if cfg.Security.TicketTTLSeconds != 300 {
+	if cfg.Security.TicketTTLSeconds != 15 {
 		t.Fatalf("unexpected ticket ttl: %d", cfg.Security.TicketTTLSeconds)
 	}
 }

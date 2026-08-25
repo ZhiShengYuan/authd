@@ -204,7 +204,7 @@ func TestChallengeVerifyRejectsGet(t *testing.T) {
 	}
 }
 
-func TestChallengeVerifyInvalidPowReturnsChallengeInvalid(t *testing.T) {
+func TestChallengeVerifyInvalidPowReturnsInvalidPow(t *testing.T) {
 	cfg := &config.Config{Security: config.SecurityConfig{GlobalSecret: "0123456789abcdef0123456789abcdef", ChallengeTTLSeconds: 30}}
 	store := testutil.NewTestStore(t)
 
@@ -251,8 +251,8 @@ func TestChallengeVerifyInvalidPowReturnsChallengeInvalid(t *testing.T) {
 	if verifyEnvelope.Success {
 		t.Fatalf("expected success=false for invalid PoW, got body=%s", verifyRR.Body.String())
 	}
-	if verifyEnvelope.Error == nil || verifyEnvelope.Error.Code != api.ErrChallengeInvalid {
-		t.Fatalf("expected error code %q, got %#v", api.ErrChallengeInvalid, verifyEnvelope.Error)
+	if verifyEnvelope.Error == nil || verifyEnvelope.Error.Code != api.ErrInvalidPoW {
+		t.Fatalf("expected error code %q, got %#v", api.ErrInvalidPoW, verifyEnvelope.Error)
 	}
 }
 

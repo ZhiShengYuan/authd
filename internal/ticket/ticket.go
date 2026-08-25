@@ -14,9 +14,14 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/mirror-guard/auth-backend/internal/expiry"
 )
 
-const defaultTTLSeconds = 15
+const (
+	defaultTTLSeconds = 15
+	ticketExpiryGrace = 30 * time.Second
+)
 
 var (
 	ErrTicketInvalid   = errors.New("ticket: invalid")
@@ -40,15 +45,14 @@ type ticketState struct {
 
 type TicketStore struct {
 	states sync.Map
+	size   atomic.Int64
 }
 
 type TicketManager struct {
-	hmacKey    []byte
-	ttlSeconds int
-	store      *TicketStore
-
-	stopCh   chan struct{}
-	stopOnce sync.Once
+	hmacKey     []byte
+	ttlSeconds  int
+	store       *TicketStore
+	expirations *expiry.Queue
 }
 
 type parsedTicket struct {
@@ -73,12 +77,13 @@ func NewManager(globalSecret string, ttlSeconds int) *TicketManager {
 
 	derived := sha512.Sum512([]byte(globalSecret + "|" + runtimeTokenID))
 
-	return &TicketManager{
+	manager := &TicketManager{
 		hmacKey:    derived[:64],
 		ttlSeconds: ttlSeconds,
 		store:      &TicketStore{},
-		stopCh:     make(chan struct{}),
 	}
+	manager.expirations = expiry.New(manager.expire)
+	return manager
 }
 
 func UADigest(userAgent string) string {
@@ -134,6 +139,11 @@ func (m *TicketManager) Issue(bind BindMatrix, uses int) (token string, err erro
 	state := &ticketState{expiresAt: time.Unix(expiresAt, 0)}
 	state.remainingUses.Store(int32(uses))
 	m.store.states.Store(ticketID, state)
+	m.store.size.Add(1)
+	if !m.expirations.Schedule(ticketID, state.expiresAt.Add(ticketExpiryGrace)) {
+		m.delete(ticketID, state)
+		return "", errors.New("ticket: expiration queue stopped")
+	}
 
 	return base64.RawURLEncoding.EncodeToString(raw), nil
 }
@@ -173,44 +183,42 @@ func (m *TicketManager) Verify(token string, bind BindMatrix) (valid bool, err e
 }
 
 func (m *TicketManager) StartCleanup(interval time.Duration) {
-	if interval <= 0 {
-		return
-	}
-
-	ticker := time.NewTicker(interval)
-	go func() {
-		defer ticker.Stop()
-		for {
-			select {
-			case <-ticker.C:
-				m.cleanupExpired(time.Now())
-			case <-m.stopCh:
-				return
-			}
-		}
-	}()
+	_ = interval
+	m.expirations.Start()
 }
 
 func (m *TicketManager) Stop() {
-	m.stopOnce.Do(func() {
-		close(m.stopCh)
-	})
+	m.expirations.Stop()
 }
 
-func (m *TicketManager) cleanupExpired(now time.Time) {
-	m.store.states.Range(func(key, value any) bool {
-		state, ok := value.(*ticketState)
-		if !ok {
-			m.store.states.Delete(key)
-			return true
-		}
+func (m *TicketManager) Size() int64 {
+	if m == nil || m.store == nil {
+		return 0
+	}
+	return m.store.size.Load()
+}
 
-		if now.After(state.expiresAt) {
-			m.store.states.Delete(key)
-		}
+func (m *TicketManager) delete(ticketID string, expected *ticketState) {
+	if m.store.states.CompareAndDelete(ticketID, expected) {
+		m.store.size.Add(-1)
+	}
+}
 
-		return true
-	})
+func (m *TicketManager) expire(ticketID string, expectedExpiry time.Time) {
+	actual, ok := m.store.states.Load(ticketID)
+	if !ok {
+		return
+	}
+	state, ok := actual.(*ticketState)
+	if !ok {
+		m.store.states.Delete(ticketID)
+		return
+	}
+	deleteAt := state.expiresAt.Add(ticketExpiryGrace)
+	if !deleteAt.Equal(expectedExpiry) || time.Now().Before(deleteAt) {
+		return
+	}
+	m.delete(ticketID, state)
 }
 
 func (m *TicketManager) parseAndVerify(token string) (*parsedTicket, error) {

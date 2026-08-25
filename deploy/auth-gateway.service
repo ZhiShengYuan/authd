@@ -1,20 +1,39 @@
 [Unit]
-Description=Mirror-Guard Auth Gateway (Go PDP)
+Description=Mirror-Guard Auth Gateway
 After=network.target
 
 [Service]
 Type=simple
 User=www-data
 Group=www-data
-ExecStart=/usr/local/bin/auth-gateway -config /etc/auth-gateway/config.json
-ExecReload=/bin/kill -HUP $MAINPID
+WorkingDirectory=/opt/authd
+ExecStart=/opt/authd/authd -config /opt/authd/config.json
 Restart=on-failure
 RestartSec=5s
 LimitNOFILE=65536
-
-# Ensure runtime unix socket path exists and is writable.
 RuntimeDirectory=auth-gateway
+RuntimeDirectoryGroup=www-data
 RuntimeDirectoryMode=0770
+UMask=0007
+
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectSystem=strict
+ProtectHome=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ProtectClock=true
+ProtectHostname=true
+RestrictNamespaces=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet=
+AmbientCapabilities=
+SystemCallArchitectures=native
+RestrictAddressFamilies=AF_UNIX
 
 [Install]
 WantedBy=multi-user.target

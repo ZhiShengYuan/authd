@@ -70,7 +70,7 @@ func NewTestConfig() *config.Config {
 			PowMinDifficulty:    1,
 			PowMaxDifficulty:    1,
 			ChallengeTTLSeconds: 30,
-			TicketTTLSeconds:    300,
+			TicketTTLSeconds:    15,
 		},
 	}
 }

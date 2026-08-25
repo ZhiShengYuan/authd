@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"net/http"
 	"os"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -23,8 +24,11 @@ var (
 
 	metricsRegistry *prometheus.Registry
 	authRequests    *prometheus.CounterVec
+	httpRequests    *prometheus.CounterVec
+	httpInFlight    *prometheus.GaugeVec
 	handlerDuration *prometheus.HistogramVec
 	stateStoreSize  *prometheus.GaugeVec
+	buildInfo       *prometheus.GaugeVec
 	nonceReplay     prometheus.Counter
 	cookieReplay    prometheus.Counter
 
@@ -55,10 +59,22 @@ func initLocked(serviceName, version string) {
 		Help:    "Auth handler latency in seconds by handler and action.",
 		Buckets: prometheus.DefBuckets,
 	}, []string{"handler", "action"})
+	httpRequests = prometheus.NewCounterVec(prometheus.CounterOpts{
+		Name: "auth_http_requests_total",
+		Help: "Total internal API requests by handler, method, and status.",
+	}, []string{"handler", "method", "status"})
+	httpInFlight = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "auth_http_requests_in_flight",
+		Help: "Current internal API requests by handler.",
+	}, []string{"handler"})
 	stateStoreSize = prometheus.NewGaugeVec(prometheus.GaugeOpts{
 		Name: "auth_state_store_size",
 		Help: "Current size of in-memory state stores.",
 	}, []string{"store_type"})
+	buildInfo = prometheus.NewGaugeVec(prometheus.GaugeOpts{
+		Name: "auth_build_info",
+		Help: "Build information for the auth gateway.",
+	}, []string{"service", "version"})
 	nonceReplay = prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "auth_nonce_replay_total",
 		Help: "Total number of replayed PoW nonces.",
@@ -68,7 +84,19 @@ func initLocked(serviceName, version string) {
 		Help: "Total number of replayed auth cookies.",
 	})
 
-	metricsRegistry.MustRegister(authRequests, handlerDuration, stateStoreSize, nonceReplay, cookieReplay)
+	metricsRegistry.MustRegister(
+		authRequests,
+		httpRequests,
+		httpInFlight,
+		handlerDuration,
+		stateStoreSize,
+		buildInfo,
+		nonceReplay,
+		cookieReplay,
+		prometheus.NewGoCollector(),
+		prometheus.NewProcessCollector(prometheus.ProcessCollectorOpts{}),
+	)
+	buildInfo.WithLabelValues(serviceName, version).Set(1)
 	stateStoreSize.WithLabelValues("quota").Set(0)
 	stateStoreSize.WithLabelValues("nonce").Set(0)
 	stateStoreSize.WithLabelValues("cookie").Set(0)
@@ -92,6 +120,48 @@ func MetricsHandler() http.Handler {
 	defer initMu.Unlock()
 	initLocked("mirror-guard-auth-gateway", "dev")
 	return promhttp.HandlerFor(metricsRegistry, promhttp.HandlerOpts{})
+}
+
+type statusWriter struct {
+	http.ResponseWriter
+	status int
+}
+
+func (w *statusWriter) WriteHeader(status int) {
+	if w.status != 0 {
+		return
+	}
+	w.status = status
+	w.ResponseWriter.WriteHeader(status)
+}
+
+func (w *statusWriter) Write(body []byte) (int, error) {
+	if w.status == 0 {
+		w.WriteHeader(http.StatusOK)
+	}
+	return w.ResponseWriter.Write(body)
+}
+
+// InstrumentHandler records bounded-label request, concurrency, and latency
+// metrics. Handler names are fixed at route registration time and status is a
+// three-digit integer, so these metrics cannot grow with attacker input.
+func InstrumentHandler(name string, next http.Handler) http.Handler {
+	Init("mirror-guard-auth-gateway", "dev")
+	name = normalizeLabel(name, "unknown")
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		started := time.Now()
+		httpInFlight.WithLabelValues(name).Inc()
+		defer httpInFlight.WithLabelValues(name).Dec()
+
+		wrapped := &statusWriter{ResponseWriter: w}
+		next.ServeHTTP(wrapped, r)
+		if wrapped.status == 0 {
+			wrapped.status = http.StatusOK
+		}
+		status := strconv.Itoa(wrapped.status)
+		httpRequests.WithLabelValues(name, r.Method, status).Inc()
+		handlerDuration.WithLabelValues(name, status).Observe(time.Since(started).Seconds())
+	})
 }
 
 func RecordAuthDecision(action, clientClass, routeFamily string) {

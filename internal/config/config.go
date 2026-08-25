@@ -15,6 +15,7 @@ type Config struct {
 type ServerConfig struct {
 	ListenNetwork string `json:"listen_network"`
 	ListenAddress string `json:"listen_address"`
+	EnablePprof   bool   `json:"enable_pprof"`
 }
 
 type SecurityConfig struct {
@@ -74,7 +75,7 @@ func applyDefaults(cfg *Config) {
 		cfg.Security.ChallengeTTLSeconds = 30
 	}
 	if cfg.Security.TicketTTLSeconds == 0 {
-		cfg.Security.TicketTTLSeconds = 300
+		cfg.Security.TicketTTLSeconds = 15
 	}
 }
 
